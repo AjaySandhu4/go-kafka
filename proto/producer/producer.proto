@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+option go_package = "go-kafka/proto/producer";
+package producer;
+
+// Broker serves this RPCs from producer to broker
+
+service ProducerService {
+  rpc PublishMessage(PublishRequest) returns (PublishResponse);
+  rpc CreateTopic(CreateTopicRequest) returns (CreateTopicResponse);
+}
+
+message PublishRequest {
+  string topic = 1;
+  string message = 2;
+}
+
+message PublishResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message CreateTopicRequest {
+  string topic = 1;
+  int32 numPartitions = 2;
+}
+
+message CreateTopicResponse {
+  bool success = 1;
+  string error = 2;
+}
