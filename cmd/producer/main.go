@@ -1,42 +1,37 @@
 package main
 
 import (
-	"context"
 	"fmt"
-	"log"
-	"time"
-
-	producerpb "go-kafka/proto/producer"
-
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"go-kafka/producer"
 )
 
+var fakeLogs = []string{
+	"User login successful",
+	"File uploaded to server",
+	"Database connection established",
+	"Error: Unable to fetch data",
+	"User logout successful",
+	"New user registered",
+	"Password changed successfully",
+	"Session expired for user",
+	"Data backup completed",
+	"Server restarted",
+}
+
 func main() {
-	fmt.Println("Starting Kafka Producer...")
+	prod := producer.Producer{}
+	prod.StartProducer()
+	defer prod.ShutdownProducer()
 
-	// Connect to broker
-	conn, err := grpc.NewClient("localhost:8080", grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		log.Fatalf("Failed to connect to broker: %v", err)
-	}
-	defer conn.Close()
-
-	// Create producer with broker connection
-	prod := producerpb.NewProducerServiceClient(conn)
-	// Send some test messages
-	topic := "test-topic"
-	fmt.Printf("Producing messages to topic: %s\n", topic)
-	for i := range 5 {
-		message := fmt.Sprintf("Message %d from producer to topic: %s", i, topic)
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*1)
-		res, err := prod.PublishMessage(ctx, &producerpb.PublishRequest{Topic: topic, Message: message})
+	// Test the producer
+	prod.CreateTopic("test-topic", 3)
+	for _, logMsg := range fakeLogs {
+		res, err := prod.PublishMessage("test-topic", logMsg)
 		if err != nil {
-			log.Printf("Failed to send message: %v", err)
+			fmt.Printf("Error publishing message: %v\n", err)
 		} else {
-			fmt.Printf("Sent: %s\n", message+" | Response: "+res.String())
+			fmt.Printf("Published message: %s\n", res)
 		}
-		cancel()
 	}
 
 	fmt.Println("Producer finished")

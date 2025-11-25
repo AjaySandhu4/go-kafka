@@ -6,6 +6,7 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"sync"
 
 	"google.golang.org/grpc"
 )
@@ -13,6 +14,7 @@ import (
 type brokerServer struct {
 	producerpb.UnimplementedProducerServiceServer
 	Topics map[string]*Topic
+	mu     sync.RWMutex
 }
 
 type Topic struct {
@@ -33,8 +35,10 @@ type IndexEntry struct {
 	Size   int
 }
 
-func BrokerTest() {
-	log.Println("Broker test function called")
+func NewBrokerServer() *brokerServer {
+	return &brokerServer{
+		Topics: make(map[string]*Topic), // Initialize the map
+	}
 }
 
 func (b *brokerServer) PublishMessage(ctx context.Context, req *producerpb.PublishRequest) (*producerpb.PublishResponse, error) {
@@ -102,10 +106,10 @@ func (b *brokerServer) PrintTopic(topicName string) {
 	}
 }
 
-func StartBroker() {
+func (b *brokerServer) StartBroker() {
 	// Start the gRPC server
 	server := grpc.NewServer()
-	producerpb.RegisterProducerServiceServer(server, &brokerServer{})
+	producerpb.RegisterProducerServiceServer(server, b)
 
 	// Listen on port 8080
 	listener, err := net.Listen("tcp", ":8080")
@@ -114,7 +118,9 @@ func StartBroker() {
 	}
 
 	log.Println("Broker listening on :8080")
-	if err := server.Serve(listener); err != nil {
-		log.Fatalf("Failed to serve: %v", err)
-	}
+	go func() {
+		if err := server.Serve(listener); err != nil {
+			log.Fatalf("Failed to serve: %v", err)
+		}
+	}()
 }
