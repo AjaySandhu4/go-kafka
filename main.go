@@ -6,6 +6,10 @@ import (
 )
 
 func main() {
-	producer.TestFunction()
-	broker.BrokerTest()
+	prod := producer.Producer{}
+	prod.StartProducer()
+	defer prod.ShutdownProducer()
+
+	b := broker.NewBrokerServer()
+	b.StartBroker()
 }

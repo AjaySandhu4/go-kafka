@@ -7,7 +7,13 @@ proto_gen:
 		--go-grpc_out=./proto/consumer --go-grpc_opt=paths=source_relative \
 		./proto/consumer/consumer.proto
 
-clean:
+run_cluster:
+	goreman -f etcd/Procfile start
+
+clean_cluster:
+	rm -rf etcd/cluster-data
+
+clean_proto:
 	rm -rf ./proto/producer/producer.pb.go
 	rm -rf ./proto/producer/producer_grpc.pb.go
 	rm -rf ./proto/consumer/consumer.pb.go

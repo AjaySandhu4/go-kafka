@@ -6,15 +6,22 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"strconv"
 	"sync"
+	"time"
 
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 )
 
 type brokerServer struct {
 	producerpb.UnimplementedProducerServiceServer
-	Topics map[string]*Topic
-	mu     sync.RWMutex
+	Topics     map[string]*Topic
+	port       int
+	etcdClient *clientv3.Client
+	mu         sync.RWMutex
+	ctx        context.Context
+	cancel     context.CancelFunc
 }
 
 type Topic struct {
@@ -107,20 +114,89 @@ func (b *brokerServer) PrintTopic(topicName string) {
 }
 
 func (b *brokerServer) StartBroker() {
+	var err error
+
+	// Initialize etcd client
+	b.etcdClient, err = clientv3.New(clientv3.Config{
+		Endpoints:   []string{"http://127.0.0.1:2379"},
+		DialTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		log.Fatalf("Failed to connect to etcd: %v", err)
+	}
+
+	// Register broker in etcd
+	b.registerBrokerInEtcd()
+
 	// Start the gRPC server
 	server := grpc.NewServer()
 	producerpb.RegisterProducerServiceServer(server, b)
-
-	// Listen on port 8080
-	listener, err := net.Listen("tcp", ":8080")
+	listener, err := net.Listen("tcp", ":"+strconv.Itoa(b.port))
 	if err != nil {
 		log.Fatalf("Failed to listen: %v", err)
 	}
-
-	log.Println("Broker listening on :8080")
+	log.Printf("Broker listening on :%d", b.port)
 	go func() {
 		if err := server.Serve(listener); err != nil {
 			log.Fatalf("Failed to serve: %v", err)
 		}
 	}()
+
+	res, err := b.etcdClient.Get(context.Background(), "controller")
+	if err != nil {
+		log.Fatalf("Failed to get controller key from etcd: %v", err)
+	}
+	if len(res.Kvs) > 0 {
+		log.Printf("Controller key found in etcd: %s", res.Kvs[0].Value)
+	} else {
+		log.Println("Controller key not found in etcd")
+		// Create the controller key
+		_, err := b.etcdClient.Put(context.Background(), "controller", strconv.Itoa(b.port))
+		if err != nil {
+			log.Fatalf("Failed to create controller key in etcd: %v", err)
+		}
+		log.Println("Controller key created in etcd")
+	}
+
+}
+
+func (b *brokerServer) registerBrokerInEtcd() {
+	brokerGetResp, err := b.etcdClient.Get(context.Background(), "/broker/", clientv3.WithPrefix())
+	if err != nil {
+		log.Fatalf("Failed to get broker keys from etcd: %v", err)
+	}
+
+	// Grant a lease (30 seconds TTL)
+	leaseResp, err := b.etcdClient.Grant(context.Background(), 10)
+	if err != nil {
+		log.Fatalf("Failed to grant lease: %v", err)
+	}
+
+	b.port = 8080 + len(brokerGetResp.Kvs) // Assignment port number based on number of existing brokers
+	_, err = b.etcdClient.Put(context.Background(), "/broker/"+strconv.Itoa(b.port), "", clientv3.WithLease(leaseResp.ID))
+	if err != nil {
+		log.Fatalf("Failed to register broker in etcd: %v", err)
+	}
+
+	// Set up automatic lease renewal
+	kaCh, kaErr := b.etcdClient.KeepAlive(context.Background(), leaseResp.ID)
+	if kaErr != nil {
+		log.Fatalf("Failed to setup lease keep alive: %v", kaErr)
+	}
+
+	// Handle lease renewal responses in background
+	go func() {
+		for ka := range kaCh {
+			log.Printf("Lease renewed: ID=%d, TTL=%d", ka.ID, ka.TTL)
+		}
+		log.Println("Lease keep alive channel closed")
+	}()
+}
+
+func (b *brokerServer) ShutdownBroker() {
+	log.Println("Shutting down Broker...")
+	// Cleanup logic would go here
+	if b.etcdClient != nil {
+		b.etcdClient.Close()
+	}
 }
