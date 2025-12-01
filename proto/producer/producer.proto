@@ -1,4 +1,5 @@
 syntax = "proto3";
+import "google/protobuf/empty.proto";
 
 option go_package = "go-kafka/proto/producer";
 package producer;
@@ -8,11 +9,13 @@ package producer;
 service ProducerService {
   rpc PublishMessage(PublishRequest) returns (PublishResponse);
   rpc CreateTopic(CreateTopicRequest) returns (CreateTopicResponse);
+  rpc GetMetadata(google.protobuf.Empty) returns (ProducerMetadata);
 }
 
 message PublishRequest {
   string topic = 1;
-  string message = 2;
+  int32 partitionKey = 2;
+  string message = 3;
 }
 
 message PublishResponse {
@@ -28,4 +31,20 @@ message CreateTopicRequest {
 message CreateTopicResponse {
   bool success = 1;
   string error = 2;
+}
+
+message ProducerMetadata {
+  repeated TopicMetadata topics = 1;
+  repeated BrokerMetadata brokers = 2;
+}
+
+message TopicMetadata {
+  string topic = 1;
+  int32 numPartitions = 2;
+  map<int32, int32> partitions = 3;
+}
+
+message BrokerMetadata {
+  int32 port = 1;
+  string address = 2;
 }

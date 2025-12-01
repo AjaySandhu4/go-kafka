@@ -8,4 +8,7 @@ Start etcd cluster with "make run_cluster"
     - port serves as ID for broker
     - broker maintains this entry with leases
 
-/controller
+/topic/<TOPIC>/config/<num_partitions>
+    - indicates that <TOPIC> has <num_partitions> partitions
+/topic/<TOPIC>/partitions/<PARTITION_ID>/<PORT (broker port)>
+    - indicates that broker at <PORT> is hosting partition <PARTITION_ID> of <TOPIC>

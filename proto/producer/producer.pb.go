@@ -9,6 +9,7 @@ package producer
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -24,7 +25,8 @@ const (
 type PublishRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Topic         string                 `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`
-	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	PartitionKey  int32                  `protobuf:"varint,2,opt,name=partitionKey,proto3" json:"partitionKey,omitempty"`
+	Message       string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -64,6 +66,13 @@ func (x *PublishRequest) GetTopic() string {
 		return x.Topic
 	}
 	return ""
+}
+
+func (x *PublishRequest) GetPartitionKey() int32 {
+	if x != nil {
+		return x.PartitionKey
+	}
+	return 0
 }
 
 func (x *PublishRequest) GetMessage() string {
@@ -229,14 +238,179 @@ func (x *CreateTopicResponse) GetError() string {
 	return ""
 }
 
+type ProducerMetadata struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Topics        []*TopicMetadata       `protobuf:"bytes,1,rep,name=topics,proto3" json:"topics,omitempty"`
+	Brokers       []*BrokerMetadata      `protobuf:"bytes,2,rep,name=brokers,proto3" json:"brokers,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProducerMetadata) Reset() {
+	*x = ProducerMetadata{}
+	mi := &file_proto_producer_producer_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProducerMetadata) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProducerMetadata) ProtoMessage() {}
+
+func (x *ProducerMetadata) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_producer_producer_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProducerMetadata.ProtoReflect.Descriptor instead.
+func (*ProducerMetadata) Descriptor() ([]byte, []int) {
+	return file_proto_producer_producer_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ProducerMetadata) GetTopics() []*TopicMetadata {
+	if x != nil {
+		return x.Topics
+	}
+	return nil
+}
+
+func (x *ProducerMetadata) GetBrokers() []*BrokerMetadata {
+	if x != nil {
+		return x.Brokers
+	}
+	return nil
+}
+
+type TopicMetadata struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Topic         string                 `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`
+	NumPartitions int32                  `protobuf:"varint,2,opt,name=numPartitions,proto3" json:"numPartitions,omitempty"`
+	Partitions    map[int32]int32        `protobuf:"bytes,3,rep,name=partitions,proto3" json:"partitions,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TopicMetadata) Reset() {
+	*x = TopicMetadata{}
+	mi := &file_proto_producer_producer_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TopicMetadata) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TopicMetadata) ProtoMessage() {}
+
+func (x *TopicMetadata) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_producer_producer_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TopicMetadata.ProtoReflect.Descriptor instead.
+func (*TopicMetadata) Descriptor() ([]byte, []int) {
+	return file_proto_producer_producer_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *TopicMetadata) GetTopic() string {
+	if x != nil {
+		return x.Topic
+	}
+	return ""
+}
+
+func (x *TopicMetadata) GetNumPartitions() int32 {
+	if x != nil {
+		return x.NumPartitions
+	}
+	return 0
+}
+
+func (x *TopicMetadata) GetPartitions() map[int32]int32 {
+	if x != nil {
+		return x.Partitions
+	}
+	return nil
+}
+
+type BrokerMetadata struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Port          int32                  `protobuf:"varint,1,opt,name=port,proto3" json:"port,omitempty"`
+	Address       string                 `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BrokerMetadata) Reset() {
+	*x = BrokerMetadata{}
+	mi := &file_proto_producer_producer_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BrokerMetadata) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BrokerMetadata) ProtoMessage() {}
+
+func (x *BrokerMetadata) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_producer_producer_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BrokerMetadata.ProtoReflect.Descriptor instead.
+func (*BrokerMetadata) Descriptor() ([]byte, []int) {
+	return file_proto_producer_producer_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *BrokerMetadata) GetPort() int32 {
+	if x != nil {
+		return x.Port
+	}
+	return 0
+}
+
+func (x *BrokerMetadata) GetAddress() string {
+	if x != nil {
+		return x.Address
+	}
+	return ""
+}
+
 var File_proto_producer_producer_proto protoreflect.FileDescriptor
 
 const file_proto_producer_producer_proto_rawDesc = "" +
 	"\n" +
-	"\x1dproto/producer/producer.proto\x12\bproducer\"@\n" +
+	"\x1dproto/producer/producer.proto\x12\bproducer\x1a\x1bgoogle/protobuf/empty.proto\"d\n" +
 	"\x0ePublishRequest\x12\x14\n" +
-	"\x05topic\x18\x01 \x01(\tR\x05topic\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\"A\n" +
+	"\x05topic\x18\x01 \x01(\tR\x05topic\x12\"\n" +
+	"\fpartitionKey\x18\x02 \x01(\x05R\fpartitionKey\x12\x18\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\"A\n" +
 	"\x0fPublishResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\"P\n" +
@@ -245,10 +419,26 @@ const file_proto_producer_producer_proto_rawDesc = "" +
 	"\rnumPartitions\x18\x02 \x01(\x05R\rnumPartitions\"E\n" +
 	"\x13CreateTopicResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\tR\x05error2\xa4\x01\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\"w\n" +
+	"\x10ProducerMetadata\x12/\n" +
+	"\x06topics\x18\x01 \x03(\v2\x17.producer.TopicMetadataR\x06topics\x122\n" +
+	"\abrokers\x18\x02 \x03(\v2\x18.producer.BrokerMetadataR\abrokers\"\xd3\x01\n" +
+	"\rTopicMetadata\x12\x14\n" +
+	"\x05topic\x18\x01 \x01(\tR\x05topic\x12$\n" +
+	"\rnumPartitions\x18\x02 \x01(\x05R\rnumPartitions\x12G\n" +
+	"\n" +
+	"partitions\x18\x03 \x03(\v2'.producer.TopicMetadata.PartitionsEntryR\n" +
+	"partitions\x1a=\n" +
+	"\x0fPartitionsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\x05R\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\">\n" +
+	"\x0eBrokerMetadata\x12\x12\n" +
+	"\x04port\x18\x01 \x01(\x05R\x04port\x12\x18\n" +
+	"\aaddress\x18\x02 \x01(\tR\aaddress2\xe7\x01\n" +
 	"\x0fProducerService\x12E\n" +
 	"\x0ePublishMessage\x12\x18.producer.PublishRequest\x1a\x19.producer.PublishResponse\x12J\n" +
-	"\vCreateTopic\x12\x1c.producer.CreateTopicRequest\x1a\x1d.producer.CreateTopicResponseB\x19Z\x17go-kafka/proto/producerb\x06proto3"
+	"\vCreateTopic\x12\x1c.producer.CreateTopicRequest\x1a\x1d.producer.CreateTopicResponse\x12A\n" +
+	"\vGetMetadata\x12\x16.google.protobuf.Empty\x1a\x1a.producer.ProducerMetadataB\x19Z\x17go-kafka/proto/producerb\x06proto3"
 
 var (
 	file_proto_producer_producer_proto_rawDescOnce sync.Once
@@ -262,23 +452,33 @@ func file_proto_producer_producer_proto_rawDescGZIP() []byte {
 	return file_proto_producer_producer_proto_rawDescData
 }
 
-var file_proto_producer_producer_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_proto_producer_producer_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_proto_producer_producer_proto_goTypes = []any{
 	(*PublishRequest)(nil),      // 0: producer.PublishRequest
 	(*PublishResponse)(nil),     // 1: producer.PublishResponse
 	(*CreateTopicRequest)(nil),  // 2: producer.CreateTopicRequest
 	(*CreateTopicResponse)(nil), // 3: producer.CreateTopicResponse
+	(*ProducerMetadata)(nil),    // 4: producer.ProducerMetadata
+	(*TopicMetadata)(nil),       // 5: producer.TopicMetadata
+	(*BrokerMetadata)(nil),      // 6: producer.BrokerMetadata
+	nil,                         // 7: producer.TopicMetadata.PartitionsEntry
+	(*emptypb.Empty)(nil),       // 8: google.protobuf.Empty
 }
 var file_proto_producer_producer_proto_depIdxs = []int32{
-	0, // 0: producer.ProducerService.PublishMessage:input_type -> producer.PublishRequest
-	2, // 1: producer.ProducerService.CreateTopic:input_type -> producer.CreateTopicRequest
-	1, // 2: producer.ProducerService.PublishMessage:output_type -> producer.PublishResponse
-	3, // 3: producer.ProducerService.CreateTopic:output_type -> producer.CreateTopicResponse
-	2, // [2:4] is the sub-list for method output_type
-	0, // [0:2] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	5, // 0: producer.ProducerMetadata.topics:type_name -> producer.TopicMetadata
+	6, // 1: producer.ProducerMetadata.brokers:type_name -> producer.BrokerMetadata
+	7, // 2: producer.TopicMetadata.partitions:type_name -> producer.TopicMetadata.PartitionsEntry
+	0, // 3: producer.ProducerService.PublishMessage:input_type -> producer.PublishRequest
+	2, // 4: producer.ProducerService.CreateTopic:input_type -> producer.CreateTopicRequest
+	8, // 5: producer.ProducerService.GetMetadata:input_type -> google.protobuf.Empty
+	1, // 6: producer.ProducerService.PublishMessage:output_type -> producer.PublishResponse
+	3, // 7: producer.ProducerService.CreateTopic:output_type -> producer.CreateTopicResponse
+	4, // 8: producer.ProducerService.GetMetadata:output_type -> producer.ProducerMetadata
+	6, // [6:9] is the sub-list for method output_type
+	3, // [3:6] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_proto_producer_producer_proto_init() }
@@ -292,7 +492,7 @@ func file_proto_producer_producer_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_producer_producer_proto_rawDesc), len(file_proto_producer_producer_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

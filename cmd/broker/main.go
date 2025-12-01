@@ -11,6 +11,8 @@ func main() {
 	b := broker.NewBrokerServer()
 	b.StartBroker()
 	// log.Println("Broker has stopped.")
-	time.Sleep(time.Second * 10)
+	time.Sleep(time.Second * 15)
 	b.PrintTopic("test-topic")
+	b.PrintBroker()
+	b.ShutdownBroker()
 }

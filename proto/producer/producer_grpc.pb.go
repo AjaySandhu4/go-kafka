@@ -11,6 +11,7 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -21,6 +22,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	ProducerService_PublishMessage_FullMethodName = "/producer.ProducerService/PublishMessage"
 	ProducerService_CreateTopic_FullMethodName    = "/producer.ProducerService/CreateTopic"
+	ProducerService_GetMetadata_FullMethodName    = "/producer.ProducerService/GetMetadata"
 )
 
 // ProducerServiceClient is the client API for ProducerService service.
@@ -29,6 +31,7 @@ const (
 type ProducerServiceClient interface {
 	PublishMessage(ctx context.Context, in *PublishRequest, opts ...grpc.CallOption) (*PublishResponse, error)
 	CreateTopic(ctx context.Context, in *CreateTopicRequest, opts ...grpc.CallOption) (*CreateTopicResponse, error)
+	GetMetadata(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ProducerMetadata, error)
 }
 
 type producerServiceClient struct {
@@ -59,12 +62,23 @@ func (c *producerServiceClient) CreateTopic(ctx context.Context, in *CreateTopic
 	return out, nil
 }
 
+func (c *producerServiceClient) GetMetadata(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ProducerMetadata, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ProducerMetadata)
+	err := c.cc.Invoke(ctx, ProducerService_GetMetadata_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ProducerServiceServer is the server API for ProducerService service.
 // All implementations must embed UnimplementedProducerServiceServer
 // for forward compatibility.
 type ProducerServiceServer interface {
 	PublishMessage(context.Context, *PublishRequest) (*PublishResponse, error)
 	CreateTopic(context.Context, *CreateTopicRequest) (*CreateTopicResponse, error)
+	GetMetadata(context.Context, *emptypb.Empty) (*ProducerMetadata, error)
 	mustEmbedUnimplementedProducerServiceServer()
 }
 
@@ -80,6 +94,9 @@ func (UnimplementedProducerServiceServer) PublishMessage(context.Context, *Publi
 }
 func (UnimplementedProducerServiceServer) CreateTopic(context.Context, *CreateTopicRequest) (*CreateTopicResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateTopic not implemented")
+}
+func (UnimplementedProducerServiceServer) GetMetadata(context.Context, *emptypb.Empty) (*ProducerMetadata, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetMetadata not implemented")
 }
 func (UnimplementedProducerServiceServer) mustEmbedUnimplementedProducerServiceServer() {}
 func (UnimplementedProducerServiceServer) testEmbeddedByValue()                         {}
@@ -138,6 +155,24 @@ func _ProducerService_CreateTopic_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ProducerService_GetMetadata_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProducerServiceServer).GetMetadata(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ProducerService_GetMetadata_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProducerServiceServer).GetMetadata(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ProducerService_ServiceDesc is the grpc.ServiceDesc for ProducerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -152,6 +187,10 @@ var ProducerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CreateTopic",
 			Handler:    _ProducerService_CreateTopic_Handler,
+		},
+		{
+			MethodName: "GetMetadata",
+			Handler:    _ProducerService_GetMetadata_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
