@@ -18,14 +18,13 @@ import (
 
 type brokerServer struct {
 	producerpb.UnimplementedProducerServiceServer
-	Topics       map[string]*Topic
-	Metadata     Metadata
-	port         Port
-	etcdClient   *clientv3.Client
-	mu           sync.RWMutex
-	ctx          context.Context
-	cancel       context.CancelFunc
-	isController bool
+	Topics     map[string]*Topic
+	Metadata   Metadata
+	port       Port
+	etcdClient *clientv3.Client
+	mu         sync.RWMutex
+	ctx        context.Context
+	cancel     context.CancelFunc
 }
 
 type Topic struct {
@@ -47,8 +46,9 @@ type IndexEntry struct {
 }
 
 type Metadata struct {
-	TopicInfo  map[string]TopicMetadata
-	BrokerInfo map[Port]struct{}
+	TopicInfo      map[string]TopicMetadata
+	BrokerInfo     map[Port]struct{}
+	ControllerPort Port
 }
 
 type TopicMetadata struct {
@@ -67,6 +67,7 @@ type PartitionKey int
 // }
 
 func NewBrokerServer() *brokerServer {
+	log.Println("Creating new BrokerServer instance...")
 	return &brokerServer{
 		Topics: make(map[string]*Topic), // Initialize the map
 	}
@@ -180,6 +181,7 @@ func (b *brokerServer) PrintTopic(topicName string) {
 }
 
 func (b *brokerServer) StartBroker() {
+	log.Println("Starting Broker...")
 	var err error
 
 	b.ctx, b.cancel = context.WithCancel(context.Background())
@@ -263,7 +265,6 @@ func (b *brokerServer) registerBrokerInEtcd() {
 		if err != nil {
 			log.Fatalf("Failed to create controller key in etcd: %v", err)
 		}
-		b.isController = true
 		log.Println("Controller key created in etcd")
 	}
 }
@@ -334,6 +335,23 @@ func (b *brokerServer) FetchMetadata() {
 		}
 		b.Metadata.TopicInfo[meta.Topic] = meta
 	}
+	// Fetch controller port
+	controllerResp, err := b.etcdClient.Get(b.ctx, "controller")
+	if err != nil {
+		log.Fatalf("Failed to get controller key from etcd: %v", err)
+	}
+	if len(controllerResp.Kvs) > 0 {
+		controllerPort, err := strconv.Atoi(string(controllerResp.Kvs[0].Value))
+		if err != nil {
+			log.Printf("Invalid controller port in etcd key: %s", controllerResp.Kvs[0].Value)
+		} else {
+			b.Metadata.ControllerPort = Port(controllerPort)
+		}
+	} else {
+		log.Println("Controller key not found in etcd during metadata fetch")
+	}
+
+	log.Println("Metadata fetch complete.")
 }
 
 func (b *brokerServer) GetMetadata(ctx context.Context, req *emptypb.Empty) (*producerpb.ProducerMetadata, error) {
@@ -363,6 +381,11 @@ func (b *brokerServer) GetMetadata(ctx context.Context, req *emptypb.Empty) (*pr
 		}
 	}
 
+	// Enter controller port
+	meta.ControllerPort = int32(b.Metadata.ControllerPort)
+
+	log.Println("GetMetadata request processed")
+
 	return meta, nil
 }
 
@@ -372,7 +395,6 @@ func (b *brokerServer) PrintBroker() {
 
 	log.Println("==================== BROKER STATE ====================")
 	log.Printf("Port: %d", b.port)
-	log.Printf("Is Controller: %v", b.isController)
 	log.Printf("Context Active: %v", b.ctx.Err() == nil)
 
 	// Print broker metadata
@@ -443,7 +465,7 @@ func (b *brokerServer) PrintBrokerSummary() {
 	defer b.mu.RUnlock()
 
 	log.Printf("Broker Summary: Port=%d, Controller=%v, Topics=%d, Known Brokers=%d",
-		b.port, b.isController, len(b.Topics), len(b.Metadata.BrokerInfo))
+		b.port, b.Metadata.ControllerPort, len(b.Topics), len(b.Metadata.BrokerInfo))
 
 	totalMessages := 0
 	for _, topic := range b.Topics {

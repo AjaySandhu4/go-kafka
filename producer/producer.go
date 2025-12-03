@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"math/rand"
+	"strconv"
 	"sync"
 	"time"
 
@@ -16,36 +17,43 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
-var bootstrapServerPort = "8080"
+var bootstrapServerPort = 8080
 var rpcRetries = 3
 
 type Producer struct {
 	// Add producer fields if necessary
-	grpcConn       *grpc.ClientConn
-	producerClient producerpb.ProducerServiceClient
-	metadata       *broker.Metadata
-	ctx            context.Context
-	cancel         context.CancelFunc
-	mu             sync.RWMutex
+	clientConn map[broker.Port]*ClientConn
+	metadata   *broker.Metadata
+	ctx        context.Context
+	cancel     context.CancelFunc
+	mu         sync.RWMutex
+}
+
+type ClientConn struct {
+	conn   *grpc.ClientConn
+	client producerpb.ProducerServiceClient
 }
 
 func (p *Producer) StartProducer() {
 	log.Println("Starting Producer...")
+	p.clientConn = make(map[broker.Port]*ClientConn)
 
-	// Connect to broker
-	conn, err := grpc.NewClient("localhost:"+bootstrapServerPort, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// Connect to bootstrap broker
+	conn, err := grpc.NewClient("localhost:"+strconv.Itoa(bootstrapServerPort), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatalf("Failed to connect to bootstrap broker: %v", err)
 	}
-	p.grpcConn = conn
+	p.clientConn[broker.Port(bootstrapServerPort)] = &ClientConn{
+		conn:   conn,
+		client: producerpb.NewProducerServiceClient(conn),
+	}
 
-	// Create producer with broker connection
-	p.producerClient = producerpb.NewProducerServiceClient(conn)
-
-	err = p.populateMetadata()
+	err = p.populateMetadata(true)
 	if err != nil {
 		log.Fatalf("Failed to get metadata: %v", err)
 	}
+
+	err = p.populateClientConnections()
 
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 	go p.refreshMetadataLoop(p.ctx)
@@ -54,11 +62,37 @@ func (p *Producer) StartProducer() {
 
 }
 
+func (p *Producer) populateClientConnections() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for port := range p.metadata.BrokerInfo {
+		if _, exists := p.clientConn[port]; !exists {
+			conn, err := grpc.NewClient("localhost:"+strconv.Itoa(int(port)), grpc.WithTransportCredentials(insecure.NewCredentials()))
+			if err != nil {
+				log.Printf("Failed to connect to broker at port %d: %v", port, err)
+				return err
+			}
+			p.clientConn[port] = &ClientConn{
+				conn:   conn,
+				client: producerpb.NewProducerServiceClient(conn),
+			}
+			log.Printf("Connected to broker at port %d", port)
+		}
+	}
+	return nil
+}
+
 func (p *Producer) ShutdownProducer() {
 	log.Println("Shutting down Producer...")
 	// Cleanup logic would go here
-	if p.grpcConn != nil {
-		p.grpcConn.Close()
+	if p.clientConn == nil {
+		return
+	}
+	for port, clientConn := range p.clientConn {
+		if clientConn != nil && clientConn.conn != nil {
+			clientConn.conn.Close()
+		}
+		delete(p.clientConn, port)
 	}
 	p.cancel()
 	log.Println("Producer shut down")
@@ -75,18 +109,29 @@ func (p *Producer) PublishMessage(topic string, message string) (string, error) 
 		if err != nil {
 			log.Printf("Failed to get random partition: %v", err)
 			log.Printf("Attempt %d: Refreshing metadata", attempt+1)
-			p.populateMetadata()
+			p.populateMetadata(false)
+			time.Sleep(time.Millisecond * 100)
+			continue
+		}
+
+		owningBrokerPort, ok := p.metadata.TopicInfo[topic].Partitions[partitionKey]
+		if !ok {
+			log.Printf("Failed to find owning broker for partition %d", partitionKey)
+			log.Printf("Attempt %d: Refreshing metadata", attempt+1)
+			p.populateMetadata(false)
+			time.Sleep(time.Millisecond * 100)
 			continue
 		}
 
 		// Send message to broker
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*1)
 		defer cancel()
-		res, err := p.producerClient.PublishMessage(ctx, &producerpb.PublishRequest{Topic: topic, Message: message, PartitionKey: int32(partitionKey)})
+		res, err := p.clientConn[owningBrokerPort].client.PublishMessage(ctx, &producerpb.PublishRequest{Topic: topic, Message: message, PartitionKey: int32(partitionKey)})
 		if err != nil {
 			log.Printf("Attempt %d: Failed to publish message, refreshing metadata: %v", attempt, err)
 			cancel()
-			p.populateMetadata()
+			p.populateMetadata(false)
+			time.Sleep(time.Millisecond * 100)
 			continue
 		}
 		log.Printf("Sent: %s | Response: %s", message, res.String())
@@ -96,17 +141,26 @@ func (p *Producer) PublishMessage(topic string, message string) (string, error) 
 
 }
 
+// TODO: handle errors better for each case
 func (p *Producer) CreateTopic(topic string, numPartitions int) (string, error) {
 	log.Printf("Creating topic %s with %d partitions", topic, numPartitions)
 	var err error
 	for attempt := range rpcRetries {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*1)
 		defer cancel()
-		res, err := p.producerClient.CreateTopic(ctx, &producerpb.CreateTopicRequest{Topic: topic, NumPartitions: int32(numPartitions)})
+		log.Println("Creating topic via controller port")
+		if p.metadata == nil || p.metadata.ControllerPort == 0 {
+			log.Println("No valid controller port available")
+			p.populateMetadata(true)
+			time.Sleep(time.Millisecond * 100)
+			continue
+		}
+		res, err := p.clientConn[p.metadata.ControllerPort].client.CreateTopic(ctx, &producerpb.CreateTopicRequest{Topic: topic, NumPartitions: int32(numPartitions)})
 		if err != nil {
 			log.Printf("Attempt %d: Failed to create topic, refreshing metadata: %v", attempt, err)
 			cancel()
-			p.populateMetadata()
+			p.populateMetadata(false)
+			time.Sleep(time.Millisecond * 100)
 			continue
 		}
 		log.Printf("Created topic: %s | Response: %s", topic, res.String())
@@ -115,13 +169,17 @@ func (p *Producer) CreateTopic(topic string, numPartitions int) (string, error) 
 	return "", err
 }
 
-func (p *Producer) populateMetadata() error {
+func (p *Producer) populateMetadata(useBootstrapServer bool) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	brokerPort := broker.Port(bootstrapServerPort)
+	if !useBootstrapServer && p.metadata != nil && p.metadata.ControllerPort != 0 {
+		brokerPort = p.metadata.ControllerPort
+	}
 	log.Println("Fetching producer metadata")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*1)
 	defer cancel()
-	res, err := p.producerClient.GetMetadata(ctx, &emptypb.Empty{})
+	res, err := p.clientConn[brokerPort].client.GetMetadata(ctx, &emptypb.Empty{})
 	if err != nil {
 		log.Printf("Failed to get metadata: %v", err)
 		return err
@@ -144,6 +202,8 @@ func (p *Producer) populateMetadata() error {
 	for _, b := range res.Brokers {
 		meta.BrokerInfo[broker.Port(b.Port)] = struct{}{}
 	}
+	meta.ControllerPort = broker.Port(res.ControllerPort)
+
 	p.metadata = &meta
 	log.Printf("Got metadata from broker")
 	return nil
@@ -177,7 +237,7 @@ func (p *Producer) refreshMetadataLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			err := p.populateMetadata()
+			err := p.populateMetadata(false)
 			if err != nil {
 				log.Printf("Failed to refresh metadata: %v", err)
 			} else {

@@ -7,7 +7,7 @@ import (
 )
 
 func main() {
-	log.Println("In main.go... Starting Broker")
+	log.Println("In main.go...")
 	b := broker.NewBrokerServer()
 	b.StartBroker()
 	// log.Println("Broker has stopped.")

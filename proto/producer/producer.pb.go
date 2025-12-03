@@ -239,11 +239,12 @@ func (x *CreateTopicResponse) GetError() string {
 }
 
 type ProducerMetadata struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Topics        []*TopicMetadata       `protobuf:"bytes,1,rep,name=topics,proto3" json:"topics,omitempty"`
-	Brokers       []*BrokerMetadata      `protobuf:"bytes,2,rep,name=brokers,proto3" json:"brokers,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Topics         []*TopicMetadata       `protobuf:"bytes,1,rep,name=topics,proto3" json:"topics,omitempty"`
+	Brokers        []*BrokerMetadata      `protobuf:"bytes,2,rep,name=brokers,proto3" json:"brokers,omitempty"`
+	ControllerPort int32                  `protobuf:"varint,3,opt,name=ControllerPort,proto3" json:"ControllerPort,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ProducerMetadata) Reset() {
@@ -288,6 +289,13 @@ func (x *ProducerMetadata) GetBrokers() []*BrokerMetadata {
 		return x.Brokers
 	}
 	return nil
+}
+
+func (x *ProducerMetadata) GetControllerPort() int32 {
+	if x != nil {
+		return x.ControllerPort
+	}
+	return 0
 }
 
 type TopicMetadata struct {
@@ -419,10 +427,11 @@ const file_proto_producer_producer_proto_rawDesc = "" +
 	"\rnumPartitions\x18\x02 \x01(\x05R\rnumPartitions\"E\n" +
 	"\x13CreateTopicResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\tR\x05error\"w\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\"\x9f\x01\n" +
 	"\x10ProducerMetadata\x12/\n" +
 	"\x06topics\x18\x01 \x03(\v2\x17.producer.TopicMetadataR\x06topics\x122\n" +
-	"\abrokers\x18\x02 \x03(\v2\x18.producer.BrokerMetadataR\abrokers\"\xd3\x01\n" +
+	"\abrokers\x18\x02 \x03(\v2\x18.producer.BrokerMetadataR\abrokers\x12&\n" +
+	"\x0eControllerPort\x18\x03 \x01(\x05R\x0eControllerPort\"\xd3\x01\n" +
 	"\rTopicMetadata\x12\x14\n" +
 	"\x05topic\x18\x01 \x01(\tR\x05topic\x12$\n" +
 	"\rnumPartitions\x18\x02 \x01(\x05R\rnumPartitions\x12G\n" +

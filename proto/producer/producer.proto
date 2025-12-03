@@ -36,6 +36,7 @@ message CreateTopicResponse {
 message ProducerMetadata {
   repeated TopicMetadata topics = 1;
   repeated BrokerMetadata brokers = 2;
+  int32 ControllerPort = 3;
 }
 
 message TopicMetadata {
