@@ -70,6 +70,10 @@ func NewBrokerServer() *brokerServer {
 	log.Println("Creating new BrokerServer instance...")
 	return &brokerServer{
 		Topics: make(map[string]*Topic), // Initialize the map
+		Metadata: Metadata{
+			TopicInfo:  make(map[string]TopicMetadata),
+			BrokerInfo: make(map[Port]struct{}),
+		},
 	}
 }
 
@@ -157,6 +161,7 @@ func (b *brokerServer) CreateTopic(ctx context.Context, req *producerpb.CreateTo
 		return &producerpb.CreateTopicResponse{Success: false}, nil
 	}
 	b.Topics[req.Topic] = newTopic
+	b.Metadata.TopicInfo[req.Topic] = topicMeta
 
 	log.Printf("Creating topic: %s", req.Topic)
 	return &producerpb.CreateTopicResponse{Success: true}, nil
@@ -308,10 +313,15 @@ func (b *brokerServer) FetchMetadata() {
 	log.Println("Fetching metadata...")
 
 	// Fetch broker info
-	brokerGetResp, err := b.etcdClient.Get(b.ctx, "/broker/", clientv3.WithPrefix())
+	if b.etcdClient == nil {
+		log.Println("Etcd client is not initialized")
+		return
+	}
+	brokerGetResp, err := b.etcdClient.Get(context.Background(), "/broker/", clientv3.WithPrefix())
 	if err != nil {
 		log.Fatalf("Failed to get broker keys from etcd: %v", err)
 	}
+	log.Println("Broker keys fetched from etcd")
 	b.Metadata.BrokerInfo = make(map[Port]struct{})
 	for _, kv := range brokerGetResp.Kvs {
 		port, err := strconv.Atoi(string(kv.Key[len("/broker/"):]))
@@ -322,7 +332,7 @@ func (b *brokerServer) FetchMetadata() {
 		b.Metadata.BrokerInfo[Port(port)] = struct{}{}
 	}
 	// Fetch topic info
-	topicGetResp, err := b.etcdClient.Get(b.ctx, "/topic/", clientv3.WithPrefix())
+	topicGetResp, err := b.etcdClient.Get(context.Background(), "/topic/", clientv3.WithPrefix())
 	if err != nil {
 		log.Fatalf("Failed to get topic keys from etcd: %v", err)
 	}
@@ -336,7 +346,7 @@ func (b *brokerServer) FetchMetadata() {
 		b.Metadata.TopicInfo[meta.Topic] = meta
 	}
 	// Fetch controller port
-	controllerResp, err := b.etcdClient.Get(b.ctx, "controller")
+	controllerResp, err := b.etcdClient.Get(context.Background(), "controller")
 	if err != nil {
 		log.Fatalf("Failed to get controller key from etcd: %v", err)
 	}
