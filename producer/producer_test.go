@@ -615,9 +615,9 @@ func TestRefreshMetadataLoop(t *testing.T) {
 	producer.populateMetadata(false)
 
 	// Verify new topic is in metadata
-	producer.mu.RLock()
+	producer.metadataMu.RLock()
 	_, exists := producer.clusterMetadata.TopicsMetadata.Topics["new-topic"]
-	producer.mu.RUnlock()
+	producer.metadataMu.RUnlock()
 
 	if !exists {
 		t.Error("ClusterMetadata refresh did not pick up new topic")

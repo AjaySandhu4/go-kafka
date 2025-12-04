@@ -25,7 +25,7 @@ type Producer struct {
 	clusterMetadata *broker.ClusterMetadata
 	ctx             context.Context
 	cancel          context.CancelFunc
-	mu              sync.RWMutex
+	metadataMu      sync.RWMutex
 }
 
 type ProducerClusterMetadata struct {
@@ -67,8 +67,8 @@ func (p *Producer) StartProducer() {
 }
 
 func (p *Producer) populateClientConnections() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.metadataMu.Lock()
+	defer p.metadataMu.Unlock()
 	for port := range p.clusterMetadata.BrokersMetadata.Brokers {
 		if _, exists := p.clientConn[port]; !exists {
 			conn, err := grpc.NewClient("localhost:"+strconv.Itoa(int(port)), grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -173,8 +173,8 @@ func (p *Producer) CreateTopic(topic string, numPartitions int) (string, error) 
 }
 
 func (p *Producer) populateMetadata(useBootstrapServer bool) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.metadataMu.Lock()
+	defer p.metadataMu.Unlock()
 	brokerPort := broker.Port(bootstrapServerPort)
 	if !useBootstrapServer && p.clusterMetadata != nil && p.clusterMetadata.BrokersMetadata.Controller != 0 {
 		brokerPort = p.clusterMetadata.BrokersMetadata.Controller
@@ -213,8 +213,8 @@ func (p *Producer) populateMetadata(useBootstrapServer bool) error {
 }
 
 func (p *Producer) getRandomPartition(topic string) (broker.PartitionKey, error) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+	p.metadataMu.RLock()
+	defer p.metadataMu.RUnlock()
 	if p.clusterMetadata == nil {
 		return -1, errors.New("producer metadata is not populated")
 	}
