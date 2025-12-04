@@ -110,7 +110,8 @@ func (b *brokerServer) StartBroker() {
 	// Register broker in etcd
 	b.registerBrokerInEtcd()
 
-	b.FetchMetadata()
+	b.fetchBrokerMetadata()
+	b.fetchTopicMetadata()
 
 	b.registerBrokerWatcher()
 	b.registerTopicWatcher()
@@ -286,21 +287,4 @@ func (b *brokerServer) fetchTopicMetadata() error {
 		b.ClusterMetadata.TopicsMetadata.Topics[meta.Topic] = &meta
 	}
 	return nil
-}
-
-// Fetch metadata from etcd and populate local ClusterMetadata struct
-func (b *brokerServer) FetchMetadata() {
-	log.Println("Fetching metadata...")
-
-	// Fetch broker info
-	if err := b.fetchBrokerMetadata(); err != nil {
-		log.Printf("Error fetching broker metadata: %v", err)
-	}
-
-	// Fetch topic info
-	if err := b.fetchTopicMetadata(); err != nil {
-		log.Printf("Error fetching topic metadata: %v", err)
-	}
-
-	log.Println("ClusterMetadata fetch complete.")
 }

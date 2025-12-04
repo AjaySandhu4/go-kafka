@@ -14,6 +14,9 @@ import (
 )
 
 func (b *brokerServer) PublishMessage(ctx context.Context, req *producerpb.PublishRequest) (*producerpb.PublishResponse, error) {
+	b.topicsMu.Lock()
+	defer b.topicsMu.Unlock()
+
 	log.Printf("Received message for topic %s: %s", req.Topic, req.Message)
 	if b.Topics[req.Topic] == nil {
 		log.Printf("Topic %s does not exist", req.Topic)
@@ -52,6 +55,13 @@ func (b *brokerServer) PublishMessage(ctx context.Context, req *producerpb.Publi
 }
 
 func (b *brokerServer) CreateTopic(ctx context.Context, req *producerpb.CreateTopicRequest) (*producerpb.CreateTopicResponse, error) {
+	b.topicsMu.Lock()
+	b.metadataMu.Lock()
+	defer b.topicsMu.Unlock()
+	defer b.metadataMu.Unlock()
+
+	log.Println("Received CreateTopic request for topic:", req.Topic)
+
 	if b.Topics[req.Topic] != nil {
 		log.Printf("Topic %s already exists", req.Topic)
 		return &producerpb.CreateTopicResponse{Success: false}, nil
@@ -99,7 +109,9 @@ func (b *brokerServer) CreateTopic(ctx context.Context, req *producerpb.CreateTo
 		log.Printf("Failed to create topic in etcd: %v", err)
 		return &producerpb.CreateTopicResponse{Success: false}, errors.New("Failed to create topic in etcd")
 	}
+
 	b.Topics[req.Topic] = newTopic
+
 	b.ClusterMetadata.TopicsMetadata.Topics[req.Topic] = &topicMeta
 
 	log.Printf("Creating topic: %s", req.Topic)
@@ -107,6 +119,9 @@ func (b *brokerServer) CreateTopic(ctx context.Context, req *producerpb.CreateTo
 }
 
 func (b *brokerServer) GetMetadata(ctx context.Context, req *emptypb.Empty) (*producerpb.ProducerMetadata, error) {
+	b.metadataMu.RLock()
+	defer b.metadataMu.RUnlock()
+
 	log.Println("Received GetMetadata request")
 	meta := &producerpb.ProducerMetadata{
 		Topics:  []*producerpb.TopicMetadata{},

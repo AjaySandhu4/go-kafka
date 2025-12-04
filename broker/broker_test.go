@@ -565,7 +565,8 @@ func TestFetchMetadata(t *testing.T) {
 	}
 
 	// Fetch metadata
-	broker.FetchMetadata()
+	broker.fetchBrokerMetadata()
+	broker.fetchTopicMetadata()
 
 	// Verify metadata was fetched
 	fetchedMeta, exists := broker.ClusterMetadata.TopicsMetadata.Topics[topicName]
