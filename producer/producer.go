@@ -99,10 +99,9 @@ func (p *Producer) ShutdownProducer() {
 
 }
 
-func (p *Producer) PublishMessage(topic string, message string) (string, error) {
+func (p *Producer) PublishMessage(topic string, message string) error {
 	log.Printf("Producing message to topic %s: %s", topic, message)
 
-	var err error
 	for attempt := range rpcRetries {
 		// Pick random partition to send message to
 		partitionKey, err := p.getRandomPartition(topic)
@@ -135,16 +134,16 @@ func (p *Producer) PublishMessage(topic string, message string) (string, error) 
 			continue
 		}
 		log.Printf("Sent: %s | Response: %s", message, res.String())
-		return res.String(), nil
+		return nil
 	}
-	return "", err
+	log.Println("All attempts to publish message failed")
+	return errors.New("Failed to publish message after retries")
 
 }
 
 // TODO: handle errors better for each case
 func (p *Producer) CreateTopic(topic string, numPartitions int) (string, error) {
 	log.Printf("Creating topic %s with %d partitions", topic, numPartitions)
-	var err error
 	for attempt := range rpcRetries {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*1)
 		defer cancel()
@@ -166,7 +165,7 @@ func (p *Producer) CreateTopic(topic string, numPartitions int) (string, error) 
 		log.Printf("Created topic: %s | Response: %s", topic, res.String())
 		return res.String(), nil
 	}
-	return "", err
+	return "", errors.New("Failed to create topic after retries")
 }
 
 func (p *Producer) populateMetadata(useBootstrapServer bool) error {

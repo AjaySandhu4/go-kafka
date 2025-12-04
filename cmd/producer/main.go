@@ -26,11 +26,11 @@ func main() {
 	// Test the producer
 	prod.CreateTopic("test-topic", 3)
 	for _, logMsg := range fakeLogs {
-		res, err := prod.PublishMessage("test-topic", logMsg)
+		err := prod.PublishMessage("test-topic", logMsg)
 		if err != nil {
 			fmt.Printf("Error publishing message: %v\n", err)
 		} else {
-			fmt.Printf("Published message: %s\n", res)
+			fmt.Printf("Published message: %s\n", logMsg)
 		}
 	}
 
