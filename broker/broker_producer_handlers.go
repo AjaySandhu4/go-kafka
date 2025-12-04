@@ -19,11 +19,13 @@ func (b *brokerServer) PublishMessage(ctx context.Context, req *producerpb.Publi
 		log.Printf("Topic %s does not exist", req.Topic)
 		return &producerpb.PublishResponse{Success: false}, nil
 	}
+
 	partitionKey := PartitionKey(req.PartitionKey)
 	if b.ClusterMetadata.TopicsMetadata.Topics[req.Topic].Partitions[partitionKey] != b.port {
 		log.Printf("Partition %d is not assigned to this broker", partitionKey)
 		return &producerpb.PublishResponse{Success: false}, nil
 	}
+
 	log.Printf("Publishing to partition %d", partitionKey)
 	partition := b.Topics[req.Topic].Partitions[partitionKey]
 	if partition == nil {
@@ -35,6 +37,7 @@ func (b *brokerServer) PublishMessage(ctx context.Context, req *producerpb.Publi
 		}
 		b.Topics[req.Topic].Partitions[partitionKey] = partition
 	}
+
 	// Append message
 	messageBytes := []byte(req.Message)
 	partition.Messages = append(partition.Messages, messageBytes)

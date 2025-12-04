@@ -21,7 +21,8 @@ type brokerServer struct {
 	ClusterMetadata ClusterMetadata
 	port            Port
 	etcdClient      *clientv3.Client
-	mu              sync.RWMutex
+	topicsMu        sync.RWMutex
+	metadataMu      sync.RWMutex
 	ctx             context.Context
 	cancel          context.CancelFunc
 }
@@ -90,6 +91,9 @@ func NewBrokerServer() *brokerServer {
 
 func (b *brokerServer) StartBroker() {
 	log.Println("Starting Broker...")
+	b.metadataMu.Lock()
+	defer b.metadataMu.Unlock()
+
 	var err error
 
 	b.ctx, b.cancel = context.WithCancel(context.Background())
@@ -128,6 +132,9 @@ func (b *brokerServer) StartBroker() {
 }
 
 func (b *brokerServer) registerBrokerInEtcd() {
+	b.metadataMu.Lock()
+	defer b.metadataMu.Unlock()
+
 	brokerGetResp, err := b.etcdClient.Get(b.ctx, "/broker/", clientv3.WithPrefix())
 	if err != nil {
 		log.Fatalf("Failed to get broker keys from etcd: %v", err)
@@ -160,21 +167,9 @@ func (b *brokerServer) registerBrokerInEtcd() {
 	}()
 
 	// Check for controller key
-	res, err := b.etcdClient.Get(context.Background(), "controller")
-	if err != nil {
-		log.Fatalf("Failed to get controller key from etcd: %v", err)
-	}
-	if len(res.Kvs) > 0 {
-		log.Printf("Controller key found in etcd: %s", res.Kvs[0].Value)
-	} else {
-		log.Println("Controller key not found in etcd")
-		// Create the controller key
-		_, err := b.etcdClient.Put(context.Background(), "controller", strconv.Itoa(int(b.port)))
-		if err != nil {
-			log.Fatalf("Failed to create controller key in etcd: %v", err)
-		}
-		log.Println("Controller key created in etcd")
-	}
+	b.fetchOrElectController()
+
+	log.Printf("Broker registered in etcd with port %d", b.port)
 }
 
 func (b *brokerServer) registerTopicWatcher() {
@@ -182,7 +177,7 @@ func (b *brokerServer) registerTopicWatcher() {
 	go func() {
 		for watchResp := range topicWatchCh {
 			for _, ev := range watchResp.Events {
-				b.FetchMetadata()
+				b.fetchTopicMetadata()
 				log.Printf("Topic metadata refreshed due to etcd event: %s %q : %q", ev.Type, ev.Kv.Key, ev.Kv.Value)
 			}
 		}
@@ -194,7 +189,7 @@ func (b *brokerServer) registerBrokerWatcher() {
 	go func() {
 		for watchResp := range brokerWatchCh {
 			for _, ev := range watchResp.Events {
-				b.FetchMetadata()
+				b.fetchBrokerMetadata()
 				log.Printf("Broker metadata refreshed due to etcd event: %s %q : %q", ev.Type, ev.Kv.Key, ev.Kv.Value)
 			}
 		}
@@ -202,6 +197,8 @@ func (b *brokerServer) registerBrokerWatcher() {
 }
 
 func (b *brokerServer) ShutdownBroker() {
+	b.metadataMu.Lock()
+	defer b.metadataMu.Unlock()
 	log.Println("Shutting down Broker...")
 	// Cleanup logic would go here
 	if b.etcdClient != nil {
@@ -212,6 +209,8 @@ func (b *brokerServer) ShutdownBroker() {
 }
 
 func (b *brokerServer) fetchBrokerMetadata() error {
+	b.metadataMu.Lock()
+	defer b.metadataMu.Unlock()
 	log.Println("Fetching broker metadata...")
 	// Fetch broker info
 	if b.etcdClient == nil {
@@ -232,41 +231,41 @@ func (b *brokerServer) fetchBrokerMetadata() error {
 		}
 		b.ClusterMetadata.BrokersMetadata.Brokers[Port(port)] = &BrokerMetadata{Port: Port(port)}
 	}
-	err = b.fetchController()
-	if err != nil {
-		log.Printf("Error fetching controller info: %v", err)
-	}
+
+	b.fetchOrElectController()
 
 	return nil
 }
 
-func (b *brokerServer) fetchController() error {
-	// Fetch controller port
-	controllerResp, err := b.etcdClient.Get(context.Background(), "controller")
-	if err != nil {
-		log.Fatalf("Failed to get controller key from etcd: %v", err)
-	}
-	if len(controllerResp.Kvs) > 0 {
-		controllerPort, err := strconv.Atoi(string(controllerResp.Kvs[0].Value))
-		if err != nil {
-			log.Printf("Invalid controller port in etcd key: %s", controllerResp.Kvs[0].Value)
-		} else {
-			b.ClusterMetadata.BrokersMetadata.Controller = Port(controllerPort)
-		}
-	} else {
-		log.Println("Controller key not found in etcd during metadata fetch")
-		// Create the controller key
-		_, err := b.etcdClient.Put(context.Background(), "controller", strconv.Itoa(int(b.port)))
-		if err != nil {
-			log.Printf("Failed to create controller key in etcd: %v", err)
-		}
-		log.Println("Controller key created in etcd")
+func (b *brokerServer) fetchOrElectController() (bool, error) {
+	// Create a transaction
+	txn := b.etcdClient.Txn(context.Background())
 
+	// Compare: Check if controller key does NOT exist (version = 0)
+	// Then: Create the controller key with our port
+	// Else: Do nothing
+	txnResp, err := txn.
+		If(clientv3.Compare(clientv3.Version("controller"), "=", 0)).  // Test: key doesn't exist
+		Then(clientv3.OpPut("controller", strconv.Itoa(int(b.port)))). // Set: create with our port
+		Commit()
+
+	if err != nil {
+		return false, err
 	}
-	return nil
+
+	if txnResp.Succeeded {
+		log.Printf("This broker (port %d) elected as controller", b.port)
+		b.ClusterMetadata.BrokersMetadata.Controller = b.port
+		return true, nil
+	} else {
+		log.Printf("Another broker is already controller")
+		return false, nil
+	}
 }
 
 func (b *brokerServer) fetchTopicMetadata() error {
+	b.metadataMu.Lock()
+	defer b.metadataMu.Unlock()
 	log.Println("Fetching topic metadata...")
 	// Fetch topic info
 	if b.etcdClient == nil {

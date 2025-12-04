@@ -7,8 +7,10 @@ import (
 // Pretty-print the entire broker state for debugging
 
 func (b *brokerServer) PrintBroker() {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
+	b.metadataMu.RLock()
+	defer b.metadataMu.RUnlock()
+	b.topicsMu.RLock()
+	defer b.topicsMu.RUnlock()
 
 	log.Println("==================== BROKER STATE ====================")
 	log.Printf("Port: %d", b.port)
@@ -78,8 +80,10 @@ func (b *brokerServer) PrintBroker() {
 
 // Compact version for quick checks
 func (b *brokerServer) PrintBrokerSummary() {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
+	b.metadataMu.RLock()
+	defer b.metadataMu.RUnlock()
+	b.topicsMu.RLock()
+	defer b.topicsMu.RUnlock()
 
 	log.Printf("Broker Summary: Port=%d, Controller=%v, Topics=%d, Known Brokers=%d",
 		b.port, b.ClusterMetadata.BrokersMetadata.Controller, len(b.Topics), len(b.ClusterMetadata.BrokersMetadata.Brokers))
@@ -97,8 +101,8 @@ func (b *brokerServer) PrintBrokerSummary() {
 
 // Print specific topic details
 func (b *brokerServer) PrintTopicDetails(topicName string) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
+	b.topicsMu.RLock()
+	defer b.topicsMu.RUnlock()
 
 	log.Printf("========== TOPIC DETAILS: %s ==========", topicName)
 
