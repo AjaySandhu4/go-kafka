@@ -16,8 +16,8 @@ func (b *brokerServer) PrintBroker() {
 
 	// Print broker metadata
 	log.Println("\n--- BROKER METADATA ---")
-	log.Printf("Known Brokers (%d):", len(b.Metadata.BrokerInfo))
-	for port := range b.Metadata.BrokerInfo {
+	log.Printf("Known Brokers (%d):", len(b.ClusterMetadata.BrokersMetadata.Brokers))
+	for port := range b.ClusterMetadata.BrokersMetadata.Brokers {
 		if port == b.port {
 			log.Printf("  - Port %d (THIS BROKER)", port)
 		} else {
@@ -26,8 +26,8 @@ func (b *brokerServer) PrintBroker() {
 	}
 
 	// Print topic metadata
-	log.Printf("\nTopic Metadata from etcd (%d topics):", len(b.Metadata.TopicInfo))
-	for topicName, topicMeta := range b.Metadata.TopicInfo {
+	log.Printf("\nTopic ClusterMetadata from etcd (%d topics):", len(b.ClusterMetadata.TopicsMetadata.Topics))
+	for topicName, topicMeta := range b.ClusterMetadata.TopicsMetadata.Topics {
 		log.Printf("  Topic: %s", topicName)
 		log.Printf("    Partitions: %d", topicMeta.NumPartitions)
 		log.Printf("    Partition Assignments:")
@@ -82,7 +82,7 @@ func (b *brokerServer) PrintBrokerSummary() {
 	defer b.mu.RUnlock()
 
 	log.Printf("Broker Summary: Port=%d, Controller=%v, Topics=%d, Known Brokers=%d",
-		b.port, b.Metadata.ControllerPort, len(b.Topics), len(b.Metadata.BrokerInfo))
+		b.port, b.ClusterMetadata.BrokersMetadata.Controller, len(b.Topics), len(b.ClusterMetadata.BrokersMetadata.Brokers))
 
 	totalMessages := 0
 	for _, topic := range b.Topics {
@@ -123,7 +123,7 @@ func (b *brokerServer) PrintTopicDetails(topicName string) {
 	}
 
 	// Check metadata
-	meta, hasMeta := b.Metadata.TopicInfo[topicName]
+	meta, hasMeta := b.ClusterMetadata.TopicsMetadata.Topics[topicName]
 	if !hasMeta {
 		log.Printf("\nTopic metadata NOT FOUND in etcd cache")
 	} else {

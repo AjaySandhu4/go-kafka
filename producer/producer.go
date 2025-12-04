@@ -21,12 +21,16 @@ var bootstrapServerPort = 8080
 var rpcRetries = 3
 
 type Producer struct {
-	// Add producer fields if necessary
-	clientConn map[broker.Port]*ClientConn
-	metadata   *broker.Metadata
-	ctx        context.Context
-	cancel     context.CancelFunc
-	mu         sync.RWMutex
+	clientConn      map[broker.Port]*ClientConn
+	clusterMetadata *broker.ClusterMetadata
+	ctx             context.Context
+	cancel          context.CancelFunc
+	mu              sync.RWMutex
+}
+
+type ProducerClusterMetadata struct {
+	TopicsMetadata  broker.TopicsMetadata
+	BrokersMetadata broker.BrokersMetadata
 }
 
 type ClientConn struct {
@@ -65,7 +69,7 @@ func (p *Producer) StartProducer() {
 func (p *Producer) populateClientConnections() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for port := range p.metadata.BrokerInfo {
+	for port := range p.clusterMetadata.BrokersMetadata.Brokers {
 		if _, exists := p.clientConn[port]; !exists {
 			conn, err := grpc.NewClient("localhost:"+strconv.Itoa(int(port)), grpc.WithTransportCredentials(insecure.NewCredentials()))
 			if err != nil {
@@ -113,7 +117,7 @@ func (p *Producer) PublishMessage(topic string, message string) error {
 			continue
 		}
 
-		owningBrokerPort, ok := p.metadata.TopicInfo[topic].Partitions[partitionKey]
+		owningBrokerPort, ok := p.clusterMetadata.TopicsMetadata.Topics[topic].Partitions[partitionKey]
 		if !ok {
 			log.Printf("Failed to find owning broker for partition %d", partitionKey)
 			log.Printf("Attempt %d: Refreshing metadata", attempt+1)
@@ -148,13 +152,13 @@ func (p *Producer) CreateTopic(topic string, numPartitions int) (string, error) 
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*1)
 		defer cancel()
 		log.Println("Creating topic via controller port")
-		if p.metadata == nil || p.metadata.ControllerPort == 0 {
+		if p.clusterMetadata == nil || p.clusterMetadata.BrokersMetadata.Controller == 0 {
 			log.Println("No valid controller port available")
 			p.populateMetadata(true)
 			time.Sleep(time.Millisecond * 100)
 			continue
 		}
-		res, err := p.clientConn[p.metadata.ControllerPort].client.CreateTopic(ctx, &producerpb.CreateTopicRequest{Topic: topic, NumPartitions: int32(numPartitions)})
+		res, err := p.clientConn[p.clusterMetadata.BrokersMetadata.Controller].client.CreateTopic(ctx, &producerpb.CreateTopicRequest{Topic: topic, NumPartitions: int32(numPartitions)})
 		if err != nil {
 			log.Printf("Attempt %d: Failed to create topic, refreshing metadata: %v", attempt, err)
 			cancel()
@@ -172,8 +176,8 @@ func (p *Producer) populateMetadata(useBootstrapServer bool) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	brokerPort := broker.Port(bootstrapServerPort)
-	if !useBootstrapServer && p.metadata != nil && p.metadata.ControllerPort != 0 {
-		brokerPort = p.metadata.ControllerPort
+	if !useBootstrapServer && p.clusterMetadata != nil && p.clusterMetadata.BrokersMetadata.Controller != 0 {
+		brokerPort = p.clusterMetadata.BrokersMetadata.Controller
 	}
 	log.Println("Fetching producer metadata")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*1)
@@ -183,9 +187,9 @@ func (p *Producer) populateMetadata(useBootstrapServer bool) error {
 		log.Printf("Failed to get metadata: %v", err)
 		return err
 	}
-	meta := broker.Metadata{
-		TopicInfo:  make(map[string]broker.TopicMetadata),
-		BrokerInfo: make(map[broker.Port]struct{}),
+	meta := broker.ClusterMetadata{
+		TopicsMetadata:  &broker.TopicsMetadata{Topics: make(map[string]*broker.TopicMetadata)},
+		BrokersMetadata: &broker.BrokersMetadata{Brokers: make(map[broker.Port]*broker.BrokerMetadata)},
 	}
 	for _, t := range res.Topics {
 		topicMeta := broker.TopicMetadata{
@@ -196,14 +200,14 @@ func (p *Producer) populateMetadata(useBootstrapServer bool) error {
 		for partition, port := range t.Partitions {
 			topicMeta.Partitions[broker.PartitionKey(partition)] = broker.Port(port)
 		}
-		meta.TopicInfo[t.Topic] = topicMeta
+		meta.TopicsMetadata.Topics[t.Topic] = &topicMeta
 	}
 	for _, b := range res.Brokers {
-		meta.BrokerInfo[broker.Port(b.Port)] = struct{}{}
+		meta.BrokersMetadata.Brokers[broker.Port(b.Port)] = &broker.BrokerMetadata{Port: broker.Port(b.Port)}
 	}
-	meta.ControllerPort = broker.Port(res.ControllerPort)
+	meta.BrokersMetadata.Controller = broker.Port(res.ControllerPort)
 
-	p.metadata = &meta
+	p.clusterMetadata = &meta
 	log.Printf("Got metadata from broker")
 	return nil
 }
@@ -211,10 +215,10 @@ func (p *Producer) populateMetadata(useBootstrapServer bool) error {
 func (p *Producer) getRandomPartition(topic string) (broker.PartitionKey, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	if p.metadata == nil {
+	if p.clusterMetadata == nil {
 		return -1, errors.New("producer metadata is not populated")
 	}
-	topicMeta, exists := p.metadata.TopicInfo[topic]
+	topicMeta, exists := p.clusterMetadata.TopicsMetadata.Topics[topic]
 	if !exists {
 		return -1, errors.New("topic does not exist in metadata")
 	}
@@ -243,7 +247,7 @@ func (p *Producer) refreshMetadataLoop(ctx context.Context) {
 				log.Printf("Successfully refreshed metadata")
 			}
 		case <-ctx.Done():
-			log.Println("Metadata refresh loop stopped")
+			log.Println("ClusterMetadata refresh loop stopped")
 			return
 		}
 	}

@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	producerpb "go-kafka/proto/producer"
 	"log"
 	"net"
@@ -16,13 +17,13 @@ import (
 
 type brokerServer struct {
 	producerpb.UnimplementedProducerServiceServer
-	Topics     map[string]*Topic
-	Metadata   Metadata
-	port       Port
-	etcdClient *clientv3.Client
-	mu         sync.RWMutex
-	ctx        context.Context
-	cancel     context.CancelFunc
+	Topics          map[string]*Topic
+	ClusterMetadata ClusterMetadata
+	port            Port
+	etcdClient      *clientv3.Client
+	mu              sync.RWMutex
+	ctx             context.Context
+	cancel          context.CancelFunc
 }
 
 type Topic struct {
@@ -43,16 +44,28 @@ type IndexEntry struct {
 	Size   int
 }
 
-type Metadata struct {
-	TopicInfo      map[string]TopicMetadata
-	BrokerInfo     map[Port]struct{}
-	ControllerPort Port
+type ClusterMetadata struct {
+	TopicsMetadata  *TopicsMetadata
+	BrokersMetadata *BrokersMetadata
 }
 
 type TopicMetadata struct {
 	Topic         string
 	NumPartitions int
 	Partitions    map[PartitionKey]Port // map key to broker address
+}
+
+type TopicsMetadata struct {
+	Topics map[string]*TopicMetadata
+}
+
+type BrokerMetadata struct {
+	Port Port
+}
+
+type BrokersMetadata struct {
+	Brokers    map[Port]*BrokerMetadata
+	Controller Port
 }
 
 type Port int
@@ -68,9 +81,9 @@ func NewBrokerServer() *brokerServer {
 	log.Println("Creating new BrokerServer instance...")
 	return &brokerServer{
 		Topics: make(map[string]*Topic), // Initialize the map
-		Metadata: Metadata{
-			TopicInfo:  make(map[string]TopicMetadata),
-			BrokerInfo: make(map[Port]struct{}),
+		ClusterMetadata: ClusterMetadata{
+			TopicsMetadata:  &TopicsMetadata{Topics: make(map[string]*TopicMetadata)},
+			BrokersMetadata: &BrokersMetadata{Brokers: make(map[Port]*BrokerMetadata)},
 		},
 	}
 }
@@ -195,46 +208,39 @@ func (b *brokerServer) ShutdownBroker() {
 		b.etcdClient.Close()
 	}
 	b.cancel()
-	log.Println("Broker shut down complete.")
+	log.Println("Broker shut down complete...")
 }
 
-// Fetch metadata from etcd and populate local Metadata struct
-func (b *brokerServer) FetchMetadata() {
-	log.Println("Fetching metadata...")
-
+func (b *brokerServer) fetchBrokerMetadata() error {
+	log.Println("Fetching broker metadata...")
 	// Fetch broker info
 	if b.etcdClient == nil {
 		log.Println("Etcd client is not initialized")
-		return
+		return errors.New("Etcd client is not initialized")
 	}
 	brokerGetResp, err := b.etcdClient.Get(context.Background(), "/broker/", clientv3.WithPrefix())
 	if err != nil {
 		log.Fatalf("Failed to get broker keys from etcd: %v", err)
 	}
 	log.Println("Broker keys fetched from etcd")
-	b.Metadata.BrokerInfo = make(map[Port]struct{})
+	b.ClusterMetadata.BrokersMetadata = &BrokersMetadata{Brokers: make(map[Port]*BrokerMetadata)}
 	for _, kv := range brokerGetResp.Kvs {
 		port, err := strconv.Atoi(string(kv.Key[len("/broker/"):]))
 		if err != nil {
 			log.Printf("Invalid broker port in etcd key: %s", kv.Key)
 			continue
 		}
-		b.Metadata.BrokerInfo[Port(port)] = struct{}{}
+		b.ClusterMetadata.BrokersMetadata.Brokers[Port(port)] = &BrokerMetadata{Port: Port(port)}
 	}
-	// Fetch topic info
-	topicGetResp, err := b.etcdClient.Get(context.Background(), "/topic/", clientv3.WithPrefix())
+	err = b.fetchController()
 	if err != nil {
-		log.Fatalf("Failed to get topic keys from etcd: %v", err)
+		log.Printf("Error fetching controller info: %v", err)
 	}
-	b.Metadata.TopicInfo = make(map[string]TopicMetadata)
-	for _, kv := range topicGetResp.Kvs {
-		var meta TopicMetadata
-		if err := json.Unmarshal(kv.Value, &meta); err != nil {
-			log.Printf("Failed to unmarshal topic metadata: %v", err)
-			continue
-		}
-		b.Metadata.TopicInfo[meta.Topic] = meta
-	}
+
+	return nil
+}
+
+func (b *brokerServer) fetchController() error {
 	// Fetch controller port
 	controllerResp, err := b.etcdClient.Get(context.Background(), "controller")
 	if err != nil {
@@ -245,11 +251,57 @@ func (b *brokerServer) FetchMetadata() {
 		if err != nil {
 			log.Printf("Invalid controller port in etcd key: %s", controllerResp.Kvs[0].Value)
 		} else {
-			b.Metadata.ControllerPort = Port(controllerPort)
+			b.ClusterMetadata.BrokersMetadata.Controller = Port(controllerPort)
 		}
 	} else {
 		log.Println("Controller key not found in etcd during metadata fetch")
+		// Create the controller key
+		_, err := b.etcdClient.Put(context.Background(), "controller", strconv.Itoa(int(b.port)))
+		if err != nil {
+			log.Printf("Failed to create controller key in etcd: %v", err)
+		}
+		log.Println("Controller key created in etcd")
+
+	}
+	return nil
+}
+
+func (b *brokerServer) fetchTopicMetadata() error {
+	log.Println("Fetching topic metadata...")
+	// Fetch topic info
+	if b.etcdClient == nil {
+		log.Println("Etcd client is not initialized")
+		return errors.New("Etcd client is not initialized")
+	}
+	topicGetResp, err := b.etcdClient.Get(context.Background(), "/topic/", clientv3.WithPrefix())
+	if err != nil {
+		log.Fatalf("Failed to get topic keys from etcd: %v", err)
+	}
+	b.ClusterMetadata.TopicsMetadata = &TopicsMetadata{Topics: make(map[string]*TopicMetadata)}
+	for _, kv := range topicGetResp.Kvs {
+		var meta TopicMetadata
+		if err := json.Unmarshal(kv.Value, &meta); err != nil {
+			log.Printf("Failed to unmarshal topic metadata: %v", err)
+			continue
+		}
+		b.ClusterMetadata.TopicsMetadata.Topics[meta.Topic] = &meta
+	}
+	return nil
+}
+
+// Fetch metadata from etcd and populate local ClusterMetadata struct
+func (b *brokerServer) FetchMetadata() {
+	log.Println("Fetching metadata...")
+
+	// Fetch broker info
+	if err := b.fetchBrokerMetadata(); err != nil {
+		log.Printf("Error fetching broker metadata: %v", err)
 	}
 
-	log.Println("Metadata fetch complete.")
+	// Fetch topic info
+	if err := b.fetchTopicMetadata(); err != nil {
+		log.Printf("Error fetching topic metadata: %v", err)
+	}
+
+	log.Println("ClusterMetadata fetch complete.")
 }

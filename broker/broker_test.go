@@ -165,7 +165,7 @@ func TestPublishMessage_Success(t *testing.T) {
 	// Get partition assignment for this broker
 	var assignedPartition PartitionKey
 	found := false
-	for partKey, port := range broker.Metadata.TopicInfo[topicName].Partitions {
+	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
 		if port == broker.port {
 			assignedPartition = partKey
 			found = true
@@ -229,7 +229,7 @@ func TestPublishMessage_WrongPartition(t *testing.T) {
 	// Try to publish to a partition not owned by this broker
 	var wrongPartition PartitionKey
 	found := false
-	for partKey, port := range broker.Metadata.TopicInfo[topicName].Partitions {
+	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
 		if port != broker.port {
 			wrongPartition = partKey
 			found = true
@@ -278,7 +278,7 @@ func TestPublishMessage_MultipleMessages(t *testing.T) {
 	// Find partition assigned to this broker
 	var assignedPartition PartitionKey
 	found := false
-	for partKey, port := range broker.Metadata.TopicInfo[topicName].Partitions {
+	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
 		if port == broker.port {
 			assignedPartition = partKey
 			found = true
@@ -382,7 +382,7 @@ func TestPartitionIndex(t *testing.T) {
 	// Find partition assigned to this broker
 	var assignedPartition PartitionKey
 	found := false
-	for partKey, port := range broker.Metadata.TopicInfo[topicName].Partitions {
+	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
 		if port == broker.port {
 			assignedPartition = partKey
 			found = true
@@ -456,7 +456,7 @@ func TestPublishMessage_Concurrent(t *testing.T) {
 	// Find partition assigned to this broker
 	var assignedPartition PartitionKey
 	found := false
-	for partKey, port := range broker.Metadata.TopicInfo[topicName].Partitions {
+	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
 		if port == broker.port {
 			assignedPartition = partKey
 			found = true
@@ -515,9 +515,9 @@ func setupBrokerWithEtcd(t *testing.T) *brokerServer {
 
 	broker.etcdClient = etcdClient
 	broker.port = Port(8080)
-	broker.Metadata = Metadata{
-		TopicInfo:  make(map[string]TopicMetadata),
-		BrokerInfo: map[Port]struct{}{Port(8080): {}},
+	broker.ClusterMetadata = ClusterMetadata{
+		TopicsMetadata:  &TopicsMetadata{Topics: make(map[string]*TopicMetadata)},
+		BrokersMetadata: &BrokersMetadata{Brokers: map[Port]*BrokerMetadata{Port(8080): {Port: Port(8080)}}},
 	}
 
 	return broker
@@ -568,7 +568,7 @@ func TestFetchMetadata(t *testing.T) {
 	broker.FetchMetadata()
 
 	// Verify metadata was fetched
-	fetchedMeta, exists := broker.Metadata.TopicInfo[topicName]
+	fetchedMeta, exists := broker.ClusterMetadata.TopicsMetadata.Topics[topicName]
 	if !exists {
 		t.Fatal("Topic metadata was not fetched")
 	}

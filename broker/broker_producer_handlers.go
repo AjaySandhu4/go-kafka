@@ -20,7 +20,7 @@ func (b *brokerServer) PublishMessage(ctx context.Context, req *producerpb.Publi
 		return &producerpb.PublishResponse{Success: false}, nil
 	}
 	partitionKey := PartitionKey(req.PartitionKey)
-	if b.Metadata.TopicInfo[req.Topic].Partitions[partitionKey] != b.port {
+	if b.ClusterMetadata.TopicsMetadata.Topics[req.Topic].Partitions[partitionKey] != b.port {
 		log.Printf("Partition %d is not assigned to this broker", partitionKey)
 		return &producerpb.PublishResponse{Success: false}, nil
 	}
@@ -66,8 +66,8 @@ func (b *brokerServer) CreateTopic(ctx context.Context, req *producerpb.CreateTo
 	}
 
 	// Assign partitions to brokers
-	brokers := make([]Port, 0, len(b.Metadata.BrokerInfo))
-	for addr := range b.Metadata.BrokerInfo {
+	brokers := make([]Port, 0, len(b.ClusterMetadata.BrokersMetadata.Brokers))
+	for addr := range b.ClusterMetadata.BrokersMetadata.Brokers {
 		brokers = append(brokers, addr)
 	}
 	partitionAssignments := make(map[PartitionKey]Port)
@@ -97,7 +97,7 @@ func (b *brokerServer) CreateTopic(ctx context.Context, req *producerpb.CreateTo
 		return &producerpb.CreateTopicResponse{Success: false}, errors.New("Failed to create topic in etcd")
 	}
 	b.Topics[req.Topic] = newTopic
-	b.Metadata.TopicInfo[req.Topic] = topicMeta
+	b.ClusterMetadata.TopicsMetadata.Topics[req.Topic] = &topicMeta
 
 	log.Printf("Creating topic: %s", req.Topic)
 	return &producerpb.CreateTopicResponse{Success: true}, nil
@@ -111,7 +111,7 @@ func (b *brokerServer) GetMetadata(ctx context.Context, req *emptypb.Empty) (*pr
 	}
 
 	// Populate broker ports
-	for port := range b.Metadata.BrokerInfo {
+	for port := range b.ClusterMetadata.BrokersMetadata.Brokers {
 		meta.Brokers = append(meta.Brokers, &producerpb.BrokerMetadata{
 			Port:    int32(port),
 			Address: "localhost:" + strconv.Itoa(int(port)),
@@ -119,7 +119,7 @@ func (b *brokerServer) GetMetadata(ctx context.Context, req *emptypb.Empty) (*pr
 	}
 
 	// Populate topic metadata
-	for _, topicInfo := range b.Metadata.TopicInfo {
+	for _, topicInfo := range b.ClusterMetadata.TopicsMetadata.Topics {
 		meta.Topics = append(meta.Topics, &producerpb.TopicMetadata{
 			Topic:         topicInfo.Topic,
 			NumPartitions: int32(topicInfo.NumPartitions),
@@ -131,7 +131,7 @@ func (b *brokerServer) GetMetadata(ctx context.Context, req *emptypb.Empty) (*pr
 	}
 
 	// Enter controller port
-	meta.ControllerPort = int32(b.Metadata.ControllerPort)
+	meta.ControllerPort = int32(b.ClusterMetadata.BrokersMetadata.Controller)
 
 	log.Println("GetMetadata request processed")
 

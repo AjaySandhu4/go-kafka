@@ -158,8 +158,8 @@ func TestStartProducer(t *testing.T) {
 		t.Error("No client connections established")
 	}
 
-	if producer.metadata == nil {
-		t.Fatal("Metadata not populated")
+	if producer.clusterMetadata == nil {
+		t.Fatal("ClusterMetadata not populated")
 	}
 
 	if producer.ctx == nil {
@@ -397,15 +397,17 @@ func TestPublishMessage_Multiple(t *testing.T) {
 // Test getRandomPartition
 func TestGetRandomPartition(t *testing.T) {
 	producer := &Producer{
-		metadata: &broker.Metadata{
-			TopicInfo: map[string]broker.TopicMetadata{
-				"test-topic": {
-					Topic:         "test-topic",
-					NumPartitions: 3,
-					Partitions: map[broker.PartitionKey]broker.Port{
-						0: 8080,
-						1: 8081,
-						2: 8082,
+		clusterMetadata: &broker.ClusterMetadata{
+			TopicsMetadata: &broker.TopicsMetadata{
+				Topics: map[string]*broker.TopicMetadata{
+					"test-topic": {
+						Topic:         "test-topic",
+						NumPartitions: 3,
+						Partitions: map[broker.PartitionKey]broker.Port{
+							0: 8080,
+							1: 8081,
+							2: 8082,
+						},
 					},
 				},
 			},
@@ -443,8 +445,10 @@ func TestGetRandomPartition_NoMetadata(t *testing.T) {
 // Test getRandomPartition with non-existent topic
 func TestGetRandomPartition_TopicNotFound(t *testing.T) {
 	producer := &Producer{
-		metadata: &broker.Metadata{
-			TopicInfo: map[string]broker.TopicMetadata{},
+		clusterMetadata: &broker.ClusterMetadata{
+			TopicsMetadata: &broker.TopicsMetadata{
+				Topics: map[string]*broker.TopicMetadata{},
+			},
 		},
 	}
 
@@ -463,12 +467,14 @@ func TestGetRandomPartition_TopicNotFound(t *testing.T) {
 // Test getRandomPartition with no partitions
 func TestGetRandomPartition_NoPartitions(t *testing.T) {
 	producer := &Producer{
-		metadata: &broker.Metadata{
-			TopicInfo: map[string]broker.TopicMetadata{
-				"empty-topic": {
-					Topic:         "empty-topic",
-					NumPartitions: 0,
-					Partitions:    map[broker.PartitionKey]broker.Port{},
+		clusterMetadata: &broker.ClusterMetadata{
+			TopicsMetadata: &broker.TopicsMetadata{
+				Topics: map[string]*broker.TopicMetadata{
+					"empty-topic": {
+						Topic:         "empty-topic",
+						NumPartitions: 0,
+						Partitions:    map[broker.PartitionKey]broker.Port{},
+					},
 				},
 			},
 		},
@@ -495,10 +501,12 @@ func TestPopulateClientConnections(t *testing.T) {
 
 	producer := &Producer{
 		clientConn: make(map[broker.Port]*ClientConn),
-		metadata: &broker.Metadata{
-			BrokerInfo: map[broker.Port]struct{}{
-				8080: {},
-				8081: {},
+		clusterMetadata: &broker.ClusterMetadata{
+			BrokersMetadata: &broker.BrokersMetadata{
+				Brokers: map[broker.Port]*broker.BrokerMetadata{
+					8080: {Port: 8080},
+					8081: {Port: 8081},
+				},
 			},
 		},
 	}
@@ -513,7 +521,7 @@ func TestPopulateClientConnections(t *testing.T) {
 		t.Errorf("Expected 2 client connections, got %d", len(producer.clientConn))
 	}
 
-	for port := range producer.metadata.BrokerInfo {
+	for port := range producer.clusterMetadata.BrokersMetadata.Brokers {
 		if _, exists := producer.clientConn[port]; !exists {
 			t.Errorf("Missing client connection for broker at port %d", port)
 		}
@@ -608,10 +616,10 @@ func TestRefreshMetadataLoop(t *testing.T) {
 
 	// Verify new topic is in metadata
 	producer.mu.RLock()
-	_, exists := producer.metadata.TopicInfo["new-topic"]
+	_, exists := producer.clusterMetadata.TopicsMetadata.Topics["new-topic"]
 	producer.mu.RUnlock()
 
 	if !exists {
-		t.Error("Metadata refresh did not pick up new topic")
+		t.Error("ClusterMetadata refresh did not pick up new topic")
 	}
 }
