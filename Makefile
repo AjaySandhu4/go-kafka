@@ -13,6 +13,11 @@ run_cluster:
 clean_cluster:
 	rm -rf etcd/cluster-data
 
+clean_logs:
+	rm -rf ./logs
+
+clean_data: clean_logs clean_cluster
+
 clean_proto:
 	rm -rf ./proto/producer/producer.pb.go
 	rm -rf ./proto/producer/producer_grpc.pb.go

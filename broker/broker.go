@@ -125,7 +125,7 @@ func (b *brokerServer) StartBroker() {
 	}()
 
 	// Start log flush ticker
-	// go b.flushTicker()
+	go b.flushTicker()
 
 	log.Println("Broker started")
 
@@ -242,8 +242,6 @@ func (b *brokerServer) fetchBrokerMetadata() error {
 		b.ClusterMetadata.BrokersMetadata.Brokers[Port(port)] = &BrokerMetadata{Port: Port(port)}
 	}
 
-	// b.fetchOrElectController()
-
 	return nil
 }
 
@@ -310,67 +308,6 @@ func (b *brokerServer) fetchTopicMetadata() error {
 	return nil
 }
 
-func (b *brokerServer) flushLogs(topicName string, partitionKey PartitionKey) error {
-	b.topicsMu.RLock()
-	topic, exists := b.Topics[topicName]
-	b.topicsMu.RUnlock()
-	if !exists {
-		return errors.New("Topic does not exist")
-	}
-
-	topic.topicMu.RLock()
-	partition, exists := topic.Partitions[partitionKey]
-	topic.topicMu.RUnlock()
-	if !exists {
-		return errors.New("Partition does not exist")
-	}
-
-	partition.partitionMu.RLock()
-	lastPersistedOffset := partition.LastPersistedOffset
-	lastPersistedSegment := partition.LastPersistedSegment
-	messagesToFlush := partition.Messages
-	if len(messagesToFlush) == 0 {
-		partition.partitionMu.RUnlock()
-		log.Println("No messages to flush for topic", topicName, "partition", partitionKey)
-		return nil // Nothing to flush
-	}
-	segmentIndexEntry, err := partition.GetSegment(lastPersistedSegment)
-	if err != nil {
-		partition.partitionMu.RUnlock()
-		return errors.New("Failed to get segment index: " + err.Error())
-	}
-
-	segmentFile, err := createSegmentFile(b.port, topicName, partitionKey, lastPersistedSegment)
-	if err != nil {
-		partition.partitionMu.RUnlock()
-		return errors.New("Failed to open log file for writing: " + err.Error())
-	}
-
-	for _, msg := range messagesToFlush {
-		if msg.Offset <= lastPersistedOffset {
-			log.Println("Skipping already persisted message at offset (this shouldn't happen)", msg.Offset)
-			continue // Skip already persisted messages
-		}
-		if segmentIndexEntry.Size+len(msg.Data) > SegmentSize {
-			log.Println("Segment size limit reached, stopping flush for this segment and creating new segment")
-			segmentFile.Close()
-			partition.createNewSegment(msg.Offset)
-			segmentFile, err = createSegmentFile(b.port, topicName, partitionKey, msg.Offset)
-			if err != nil {
-				partition.partitionMu.RUnlock()
-				return errors.New("Failed to create new segment file: " + err.Error())
-			}
-		}
-		segmentFile.Write(msg.Data)
-		segmentFile.Write([]byte("\n")) // Write a newline after each message (good for debugging but may be harder to parse later)
-		partition.LastPersistedOffset = msg.Offset
-		segmentIndexEntry.Size += len(msg.Data)
-	}
-	segmentFile.Close()
-	partition.partitionMu.RUnlock()
-	return nil
-}
-
 func (b *brokerServer) flushTicker() {
 	ticker := time.NewTicker(FlushInterval)
 	defer ticker.Stop()
@@ -389,7 +326,7 @@ func (b *brokerServer) flushTicker() {
 func (b *brokerServer) flushAllLogs() {
 	for topicName, topic := range b.Topics {
 		for partitionKey := range topic.Partitions {
-			if err := b.flushLogs(topicName, partitionKey); err != nil {
+			if err := topic.Partitions[partitionKey].flushLogs(b.port, topicName, partitionKey); err != nil {
 				log.Printf("Error flushing logs for topic %s partition %d: %v", topicName, partitionKey, err)
 			}
 		}

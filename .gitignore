@@ -1,2 +1,3 @@
 # Ignore etcd data directories
 etcd/cluster-data/
+logs/

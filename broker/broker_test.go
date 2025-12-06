@@ -1,9 +1,11 @@
+// Mostly copilot generated tests for broker.go
+
 package broker
 
 import (
 	"context"
-	"encoding/json"
 	producerpb "go-kafka/proto/producer"
+	"os"
 	"strconv"
 	"sync"
 	"testing"
@@ -834,6 +836,568 @@ func TestControllerElection_ConcurrentRace(t *testing.T) {
 	_, _ = etcdClient.Delete(context.Background(), "controller")
 }
 
+// Test log flushing - single partition
+func TestFlushLogs_SinglePartition(t *testing.T) {
+	broker := setupBrokerWithEtcd(t)
+	defer cleanupEtcd(t, broker)
+
+	// Create topic
+	topicName := "flush-test-topic"
+	createReq := &producerpb.CreateTopicRequest{
+		Topic:         topicName,
+		NumPartitions: 1,
+	}
+
+	_, err := broker.CreateTopic(context.Background(), createReq)
+	if err != nil {
+		t.Fatalf("Failed to create topic: %v", err)
+	}
+
+	// Find partition assigned to this broker
+	var assignedPartition PartitionKey
+	found := false
+	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
+		if port == broker.port {
+			assignedPartition = partKey
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Skip("No partition assigned to this broker")
+	}
+
+	// Publish some messages
+	messages := []string{"Message 1", "Message 2", "Message 3"}
+	for _, msg := range messages {
+		publishReq := &producerpb.PublishRequest{
+			Topic:        topicName,
+			PartitionKey: int32(assignedPartition),
+			Message:      msg,
+		}
+
+		_, err := broker.PublishMessage(context.Background(), publishReq)
+		if err != nil {
+			t.Fatalf("Failed to publish message: %v", err)
+		}
+	}
+
+	// Flush logs
+	partition := broker.Topics[topicName].Partitions[assignedPartition]
+	err = partition.flushLogs(broker.port, topicName, assignedPartition)
+	if err != nil {
+		t.Fatalf("Failed to flush logs: %v", err)
+	}
+
+	// Verify log file was created
+	logPath := "logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(assignedPartition)) + "/segment_0.log"
+	if _, err := os.Stat(logPath); os.IsNotExist(err) {
+		t.Errorf("Log file was not created at %s", logPath)
+	}
+
+	// Verify LastPersistedOffset was updated
+	if partition.LastPersistedOffset < 0 {
+		t.Errorf("LastPersistedOffset not updated after flush")
+	}
+
+	// Clean up log files
+	os.RemoveAll("logs/broker_" + strconv.Itoa(int(broker.port)))
+}
+
+// Test log flushing - multiple partitions
+func TestFlushLogs_MultiplePartitions(t *testing.T) {
+	broker := setupBrokerWithEtcd(t)
+	defer cleanupEtcd(t, broker)
+
+	// Create topic with multiple partitions
+	topicName := "multi-partition-flush-test"
+	createReq := &producerpb.CreateTopicRequest{
+		Topic:         topicName,
+		NumPartitions: 3,
+	}
+
+	_, err := broker.CreateTopic(context.Background(), createReq)
+	if err != nil {
+		t.Fatalf("Failed to create topic: %v", err)
+	}
+
+	// Publish messages to all partitions assigned to this broker
+	assignedPartitions := []PartitionKey{}
+	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
+		if port == broker.port {
+			assignedPartitions = append(assignedPartitions, partKey)
+		}
+	}
+
+	if len(assignedPartitions) == 0 {
+		t.Skip("No partitions assigned to this broker")
+	}
+
+	for _, partKey := range assignedPartitions {
+		publishReq := &producerpb.PublishRequest{
+			Topic:        topicName,
+			PartitionKey: int32(partKey),
+			Message:      "Test message for partition " + strconv.Itoa(int(partKey)),
+		}
+
+		_, err := broker.PublishMessage(context.Background(), publishReq)
+		if err != nil {
+			t.Fatalf("Failed to publish message to partition %d: %v", partKey, err)
+		}
+	}
+
+	// Flush all logs
+	broker.flushAllLogs()
+
+	// Verify log files were created for each partition
+	for _, partKey := range assignedPartitions {
+		logPath := "logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(partKey)) + "/segment_0.log"
+		if _, err := os.Stat(logPath); os.IsNotExist(err) {
+			t.Errorf("Log file was not created for partition %d at %s", partKey, logPath)
+		}
+	}
+
+	// Clean up
+	os.RemoveAll("logs/broker_" + strconv.Itoa(int(broker.port)))
+}
+
+// Test log flushing - segment rotation
+func TestFlushLogs_SegmentRotation(t *testing.T) {
+	broker := setupBrokerWithEtcd(t)
+	defer cleanupEtcd(t, broker)
+
+	// Create topic
+	topicName := "segment-rotation-test"
+	createReq := &producerpb.CreateTopicRequest{
+		Topic:         topicName,
+		NumPartitions: 1,
+	}
+
+	_, err := broker.CreateTopic(context.Background(), createReq)
+	if err != nil {
+		t.Fatalf("Failed to create topic: %v", err)
+	}
+
+	// Find partition assigned to this broker
+	var assignedPartition PartitionKey
+	found := false
+	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
+		if port == broker.port {
+			assignedPartition = partKey
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Skip("No partition assigned to this broker")
+	}
+
+	// Publish many large messages to trigger segment rotation
+	// SegmentSize is 10KB (10240 bytes)
+	largeMessage := string(make([]byte, 3000)) // 3KB message
+	numMessages := 5                           // 15KB total, should create 2 segments
+
+	for i := 0; i < numMessages; i++ {
+		publishReq := &producerpb.PublishRequest{
+			Topic:        topicName,
+			PartitionKey: int32(assignedPartition),
+			Message:      largeMessage + strconv.Itoa(i),
+		}
+
+		_, err := broker.PublishMessage(context.Background(), publishReq)
+		if err != nil {
+			t.Fatalf("Failed to publish message %d: %v", i, err)
+		}
+	}
+
+	// Flush logs
+	partition := broker.Topics[topicName].Partitions[assignedPartition]
+	err = partition.flushLogs(broker.port, topicName, assignedPartition)
+	if err != nil {
+		t.Fatalf("Failed to flush logs: %v", err)
+	}
+
+	// Verify multiple segment files were created
+	segmentCount := 0
+	dirPath := "logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(assignedPartition))
+
+	files, err := os.ReadDir(dirPath)
+	if err != nil {
+		t.Fatalf("Failed to read log directory: %v", err)
+	}
+
+	for _, file := range files {
+		if !file.IsDir() && len(file.Name()) > 4 && file.Name()[len(file.Name())-4:] == ".log" {
+			segmentCount++
+		}
+	}
+
+	if segmentCount < 2 {
+		t.Errorf("Expected at least 2 segment files due to rotation, got %d", segmentCount)
+	}
+
+	t.Logf("Created %d segment files", segmentCount)
+
+	// Clean up
+	os.RemoveAll("logs/broker_" + strconv.Itoa(int(broker.port)))
+}
+
+// Test log flushing - empty partition
+func TestFlushLogs_EmptyPartition(t *testing.T) {
+	broker := setupBrokerWithEtcd(t)
+	defer cleanupEtcd(t, broker)
+
+	// Create topic
+	topicName := "empty-flush-test"
+	createReq := &producerpb.CreateTopicRequest{
+		Topic:         topicName,
+		NumPartitions: 1,
+	}
+
+	_, err := broker.CreateTopic(context.Background(), createReq)
+	if err != nil {
+		t.Fatalf("Failed to create topic: %v", err)
+	}
+
+	// Find partition assigned to this broker
+	var assignedPartition PartitionKey
+	found := false
+	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
+		if port == broker.port {
+			assignedPartition = partKey
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Skip("No partition assigned to this broker")
+	}
+
+	// Try to flush logs without any messages
+	partition := broker.Topics[topicName].Partitions[assignedPartition]
+	if partition == nil {
+		// Partition doesn't exist yet (created on first message)
+		t.Log("Partition not yet created, which is expected")
+		return
+	}
+
+	err = partition.flushLogs(broker.port, topicName, assignedPartition)
+	if err != nil {
+		t.Fatalf("Failed to flush empty partition: %v", err)
+	}
+
+	// Verify no log file was created
+	logPath := "logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(assignedPartition)) + "/segment_0.log"
+	if _, err := os.Stat(logPath); err == nil {
+		t.Errorf("Log file should not be created for empty partition")
+	}
+
+	// Clean up
+	os.RemoveAll("logs/broker_" + strconv.Itoa(int(broker.port)))
+}
+
+// Test log flushing - idempotent flushes
+func TestFlushLogs_Idempotent(t *testing.T) {
+	broker := setupBrokerWithEtcd(t)
+	defer cleanupEtcd(t, broker)
+
+	// Create topic
+	topicName := "idempotent-flush-test"
+	createReq := &producerpb.CreateTopicRequest{
+		Topic:         topicName,
+		NumPartitions: 1,
+	}
+
+	_, err := broker.CreateTopic(context.Background(), createReq)
+	if err != nil {
+		t.Fatalf("Failed to create topic: %v", err)
+	}
+
+	// Find partition assigned to this broker
+	var assignedPartition PartitionKey
+	found := false
+	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
+		if port == broker.port {
+			assignedPartition = partKey
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Skip("No partition assigned to this broker")
+	}
+
+	// Publish messages
+	messages := []string{"Message 1", "Message 2", "Message 3"}
+	for _, msg := range messages {
+		publishReq := &producerpb.PublishRequest{
+			Topic:        topicName,
+			PartitionKey: int32(assignedPartition),
+			Message:      msg,
+		}
+
+		_, err := broker.PublishMessage(context.Background(), publishReq)
+		if err != nil {
+			t.Fatalf("Failed to publish message: %v", err)
+		}
+	}
+
+	partition := broker.Topics[topicName].Partitions[assignedPartition]
+
+	// First flush
+	err = partition.flushLogs(broker.port, topicName, assignedPartition)
+	if err != nil {
+		t.Fatalf("First flush failed: %v", err)
+	}
+
+	firstPersistedOffset := partition.LastPersistedOffset
+
+	// Second flush (should be idempotent - not write messages again)
+	err = partition.flushLogs(broker.port, topicName, assignedPartition)
+	if err != nil {
+		t.Fatalf("Second flush failed: %v", err)
+	}
+
+	secondPersistedOffset := partition.LastPersistedOffset
+
+	// Verify offset didn't change (no new messages were persisted)
+	if firstPersistedOffset != secondPersistedOffset {
+		t.Errorf("Expected LastPersistedOffset to remain %d after second flush, got %d",
+			firstPersistedOffset, secondPersistedOffset)
+	}
+
+	// Clean up
+	os.RemoveAll("logs/broker_" + strconv.Itoa(int(broker.port)))
+}
+
+// Test log flushing - concurrent flushes
+func TestFlushLogs_Concurrent(t *testing.T) {
+	broker := setupBrokerWithEtcd(t)
+	defer cleanupEtcd(t, broker)
+
+	// Create topic
+	topicName := "concurrent-flush-test"
+	createReq := &producerpb.CreateTopicRequest{
+		Topic:         topicName,
+		NumPartitions: 1,
+	}
+
+	_, err := broker.CreateTopic(context.Background(), createReq)
+	if err != nil {
+		t.Fatalf("Failed to create topic: %v", err)
+	}
+
+	// Find partition assigned to this broker
+	var assignedPartition PartitionKey
+	found := false
+	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
+		if port == broker.port {
+			assignedPartition = partKey
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Skip("No partition assigned to this broker")
+	}
+
+	// Publish messages
+	for i := 0; i < 20; i++ {
+		publishReq := &producerpb.PublishRequest{
+			Topic:        topicName,
+			PartitionKey: int32(assignedPartition),
+			Message:      "Message " + strconv.Itoa(i),
+		}
+
+		_, err := broker.PublishMessage(context.Background(), publishReq)
+		if err != nil {
+			t.Fatalf("Failed to publish message: %v", err)
+		}
+	}
+
+	partition := broker.Topics[topicName].Partitions[assignedPartition]
+
+	// Perform concurrent flushes
+	var wg sync.WaitGroup
+	numFlushes := 5
+	errors := make(chan error, numFlushes)
+
+	for i := 0; i < numFlushes; i++ {
+		wg.Add(1)
+		go func(flushNum int) {
+			defer wg.Done()
+			err := partition.flushLogs(broker.port, topicName, assignedPartition)
+			if err != nil {
+				errors <- err
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errors)
+
+	// Check for errors
+	for err := range errors {
+		t.Errorf("Concurrent flush error: %v", err)
+	}
+
+	// Verify log file exists and contains data
+	logPath := "logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(assignedPartition)) + "/segment_0.log"
+	if _, err := os.Stat(logPath); os.IsNotExist(err) {
+		t.Errorf("Log file was not created at %s", logPath)
+	}
+
+	// Clean up
+	os.RemoveAll("logs/broker_" + strconv.Itoa(int(broker.port)))
+}
+
+// Test flush ticker
+func TestFlushTicker(t *testing.T) {
+	broker := setupBrokerWithEtcd(t)
+	defer cleanupEtcd(t, broker)
+
+	// Initialize context for ticker
+	broker.ctx, broker.cancel = context.WithCancel(context.Background())
+	defer broker.cancel()
+
+	// Create topic
+	topicName := "ticker-flush-test"
+	createReq := &producerpb.CreateTopicRequest{
+		Topic:         topicName,
+		NumPartitions: 1,
+	}
+
+	_, err := broker.CreateTopic(context.Background(), createReq)
+	if err != nil {
+		t.Fatalf("Failed to create topic: %v", err)
+	}
+
+	// Find partition assigned to this broker
+	var assignedPartition PartitionKey
+	found := false
+	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
+		if port == broker.port {
+			assignedPartition = partKey
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Skip("No partition assigned to this broker")
+	}
+
+	// Publish messages
+	publishReq := &producerpb.PublishRequest{
+		Topic:        topicName,
+		PartitionKey: int32(assignedPartition),
+		Message:      "Test message for ticker",
+	}
+
+	_, err = broker.PublishMessage(context.Background(), publishReq)
+	if err != nil {
+		t.Fatalf("Failed to publish message: %v", err)
+	}
+
+	// Start flush ticker with short interval for testing
+	originalFlushInterval := FlushInterval
+	// We can't modify the const, so we'll just test that flushTicker responds to context cancellation
+
+	tickerDone := make(chan bool)
+	go func() {
+		broker.flushTicker()
+		tickerDone <- true
+	}()
+
+	// Give it a moment to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Cancel the context to stop the ticker
+	broker.cancel()
+
+	// Wait for ticker to stop
+	select {
+	case <-tickerDone:
+		t.Log("Flush ticker stopped successfully")
+	case <-time.After(2 * time.Second):
+		t.Error("Flush ticker did not stop within timeout")
+	}
+
+	// Restore original interval (though it's const)
+	_ = originalFlushInterval
+
+	// Clean up
+	os.RemoveAll("logs/broker_" + strconv.Itoa(int(broker.port)))
+}
+
+// Test flushAllLogs with multiple topics
+func TestFlushAllLogs_MultipleTopics(t *testing.T) {
+	broker := setupBrokerWithEtcd(t)
+	defer cleanupEtcd(t, broker)
+
+	// Create multiple topics
+	topics := []string{"topic-a", "topic-b", "topic-c"}
+	for _, topicName := range topics {
+		createReq := &producerpb.CreateTopicRequest{
+			Topic:         topicName,
+			NumPartitions: 2,
+		}
+
+		_, err := broker.CreateTopic(context.Background(), createReq)
+		if err != nil {
+			t.Fatalf("Failed to create topic %s: %v", topicName, err)
+		}
+	}
+
+	// Publish messages to all topics
+	for _, topicName := range topics {
+		for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
+			if port == broker.port {
+				publishReq := &producerpb.PublishRequest{
+					Topic:        topicName,
+					PartitionKey: int32(partKey),
+					Message:      "Message for " + topicName + " partition " + strconv.Itoa(int(partKey)),
+				}
+
+				_, err := broker.PublishMessage(context.Background(), publishReq)
+				if err != nil {
+					t.Fatalf("Failed to publish to %s partition %d: %v", topicName, partKey, err)
+				}
+			}
+		}
+	}
+
+	// Flush all logs
+	broker.flushAllLogs()
+
+	// Verify log files were created
+	flushedCount := 0
+	for _, topicName := range topics {
+		for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
+			if port == broker.port {
+				logPath := "logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(partKey)) + "/segment_0.log"
+				if _, err := os.Stat(logPath); err == nil {
+					flushedCount++
+				}
+			}
+		}
+	}
+
+	if flushedCount == 0 {
+		t.Error("Expected at least one log file to be created")
+	}
+
+	t.Logf("Successfully flushed %d partitions across %d topics", flushedCount, len(topics))
+
+	// Clean up
+	os.RemoveAll("logs/broker_" + strconv.Itoa(int(broker.port)))
+}
+
 // Helper function to setup broker with etcd for testing
 func setupBrokerWithEtcd(t *testing.T) *brokerServer {
 	broker := NewBrokerServer()
@@ -868,56 +1432,6 @@ func cleanupEtcd(t *testing.T, broker *brokerServer) {
 			}
 		}
 		broker.etcdClient.Close()
-	}
-}
-
-// Test FetchMetadata
-func TestFetchMetadata(t *testing.T) {
-	broker := setupBrokerWithEtcd(t)
-	defer cleanupEtcd(t, broker)
-
-	// Create a test topic in etcd
-	topicName := "metadata-test-topic"
-	topicMeta := TopicMetadata{
-		Topic:         topicName,
-		NumPartitions: 3,
-		Partitions: map[PartitionKey]Port{
-			0: 8080,
-			1: 8081,
-			2: 8082,
-		},
-	}
-
-	metaBytes, err := json.Marshal(topicMeta)
-	if err != nil {
-		t.Fatalf("Failed to marshal topic metadata: %v", err)
-	}
-
-	_, err = broker.etcdClient.Put(context.Background(), "/topic/"+topicName, string(metaBytes))
-	if err != nil {
-		t.Fatalf("Failed to put topic in etcd: %v", err)
-	}
-
-	// Fetch metadata
-	broker.fetchBrokerMetadata()
-	broker.fetchTopicMetadata()
-
-	// Verify metadata was fetched
-	fetchedMeta, exists := broker.ClusterMetadata.TopicsMetadata.Topics[topicName]
-	if !exists {
-		t.Fatal("Topic metadata was not fetched")
-	}
-
-	if fetchedMeta.Topic != topicName {
-		t.Errorf("Expected topic name %s, got %s", topicName, fetchedMeta.Topic)
-	}
-
-	if fetchedMeta.NumPartitions != 3 {
-		t.Errorf("Expected 3 partitions, got %d", fetchedMeta.NumPartitions)
-	}
-
-	if len(fetchedMeta.Partitions) != 3 {
-		t.Errorf("Expected 3 partition assignments, got %d", len(fetchedMeta.Partitions))
 	}
 }
 

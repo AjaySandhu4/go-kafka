@@ -12,3 +12,7 @@ Start etcd cluster with "make run_cluster"
     - indicates that <TOPIC> has <num_partitions> partitions
 /topic/<TOPIC>/partitions/<PARTITION_ID>/<PORT (broker port)>
     - indicates that broker at <PORT> is hosting partition <PARTITION_ID> of <TOPIC>
+
+
+# Broker message files:
+/broker/<PORT>/<TOPIC>/<PARTITION_KEY>/<SEGMENT-ID (offset)>

@@ -1,3 +1,5 @@
+// Mostly copilot generated tests for producer.go
+
 package producer
 
 import (
