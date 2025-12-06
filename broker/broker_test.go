@@ -324,9 +324,10 @@ func TestPublishMessage_MultipleMessages(t *testing.T) {
 		}
 	}
 
-	// Verify index entries
-	if len(partition.SegmentIndex) != len(messages) {
-		t.Errorf("Expected %d index entries, got %d", len(messages), len(partition.SegmentIndex))
+	// Segment index entries are only created when logs are flushed to disk
+	// Before flushing, the segment index should be empty
+	if len(partition.SegmentIndex) != 0 {
+		t.Errorf("Expected 0 segment index entries before flush, got %d", len(partition.SegmentIndex))
 	}
 }
 
@@ -419,25 +420,39 @@ func TestPartitionIndex(t *testing.T) {
 		}
 	}
 
-	// Verify index entries
+	// Flush the logs to create segment index entries
 	partition := broker.Topics[topicName].Partitions[assignedPartition]
-	if len(partition.SegmentIndex) != len(messages) {
-		t.Fatalf("Expected %d index entries, got %d", len(messages), len(partition.SegmentIndex))
+	err = partition.flushLogs(broker.port, topicName, assignedPartition)
+	if err != nil {
+		t.Fatalf("Failed to flush logs: %v", err)
 	}
 
-	for i, entry := range partition.SegmentIndex {
-		if entry.StartOffset != expectedOffsets[i] {
-			t.Errorf("Index entry %d: expected offset %d, got %d", i, expectedOffsets[i], entry.StartOffset)
-		}
-		if entry.Size != len(messages[i]) {
-			t.Errorf("Index entry %d: expected size %d, got %d", i, len(messages[i]), entry.Size)
-		}
+	// Verify segment index entry (should have one segment containing all messages)
+	if len(partition.SegmentIndex) != 1 {
+		t.Fatalf("Expected 1 segment index entry after flush, got %d", len(partition.SegmentIndex))
+	}
+
+	// Verify the single segment starts at offset 0
+	if partition.SegmentIndex[0].StartOffset != 0 {
+		t.Errorf("Expected segment start offset 0, got %d", partition.SegmentIndex[0].StartOffset)
+	}
+
+	// Verify the segment contains all messages
+	expectedTotalSize := 0
+	for _, msg := range messages {
+		expectedTotalSize += len(msg)
+	}
+	if partition.SegmentIndex[0].Size != expectedTotalSize {
+		t.Errorf("Expected segment size %d, got %d", expectedTotalSize, partition.SegmentIndex[0].Size)
 	}
 
 	// Verify NextOffset
 	if partition.NextOffset != currentOffset {
 		t.Errorf("Expected NextOffset %d, got %d", currentOffset, partition.NextOffset)
 	}
+
+	// Clean up
+	os.RemoveAll("broker/broker_logs")
 }
 
 // Test concurrent message publishing
@@ -891,7 +906,7 @@ func TestFlushLogs_SinglePartition(t *testing.T) {
 	}
 
 	// Verify log file was created
-	logPath := "logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(assignedPartition)) + "/segment_0.log"
+	logPath := "broker/broker_logs/logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(assignedPartition)) + "/segment_0.log"
 	if _, err := os.Stat(logPath); os.IsNotExist(err) {
 		t.Errorf("Log file was not created at %s", logPath)
 	}
@@ -902,7 +917,7 @@ func TestFlushLogs_SinglePartition(t *testing.T) {
 	}
 
 	// Clean up log files
-	os.RemoveAll("logs/broker_" + strconv.Itoa(int(broker.port)))
+	os.RemoveAll("broker/broker_logs")
 }
 
 // Test log flushing - multiple partitions
@@ -952,14 +967,14 @@ func TestFlushLogs_MultiplePartitions(t *testing.T) {
 
 	// Verify log files were created for each partition
 	for _, partKey := range assignedPartitions {
-		logPath := "logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(partKey)) + "/segment_0.log"
+		logPath := "broker/broker_logs/logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(partKey)) + "/segment_0.log"
 		if _, err := os.Stat(logPath); os.IsNotExist(err) {
 			t.Errorf("Log file was not created for partition %d at %s", partKey, logPath)
 		}
 	}
 
 	// Clean up
-	os.RemoveAll("logs/broker_" + strconv.Itoa(int(broker.port)))
+	os.RemoveAll("broker/broker_logs")
 }
 
 // Test log flushing - segment rotation
@@ -1021,7 +1036,7 @@ func TestFlushLogs_SegmentRotation(t *testing.T) {
 
 	// Verify multiple segment files were created
 	segmentCount := 0
-	dirPath := "logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(assignedPartition))
+	dirPath := "broker/broker_logs/logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(assignedPartition))
 
 	files, err := os.ReadDir(dirPath)
 	if err != nil {
@@ -1041,7 +1056,7 @@ func TestFlushLogs_SegmentRotation(t *testing.T) {
 	t.Logf("Created %d segment files", segmentCount)
 
 	// Clean up
-	os.RemoveAll("logs/broker_" + strconv.Itoa(int(broker.port)))
+	os.RemoveAll("broker/broker_logs")
 }
 
 // Test log flushing - empty partition
@@ -1090,13 +1105,13 @@ func TestFlushLogs_EmptyPartition(t *testing.T) {
 	}
 
 	// Verify no log file was created
-	logPath := "logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(assignedPartition)) + "/segment_0.log"
+	logPath := "broker/broker_logs/logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(assignedPartition)) + "/segment_0.log"
 	if _, err := os.Stat(logPath); err == nil {
 		t.Errorf("Log file should not be created for empty partition")
 	}
 
 	// Clean up
-	os.RemoveAll("logs/broker_" + strconv.Itoa(int(broker.port)))
+	os.RemoveAll("broker/broker_logs")
 }
 
 // Test log flushing - idempotent flushes
@@ -1171,7 +1186,7 @@ func TestFlushLogs_Idempotent(t *testing.T) {
 	}
 
 	// Clean up
-	os.RemoveAll("logs/broker_" + strconv.Itoa(int(broker.port)))
+	os.RemoveAll("broker/broker_logs")
 }
 
 // Test log flushing - concurrent flushes
@@ -1247,13 +1262,13 @@ func TestFlushLogs_Concurrent(t *testing.T) {
 	}
 
 	// Verify log file exists and contains data
-	logPath := "logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(assignedPartition)) + "/segment_0.log"
+	logPath := "broker/broker_logs/logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(assignedPartition)) + "/segment_0.log"
 	if _, err := os.Stat(logPath); os.IsNotExist(err) {
 		t.Errorf("Log file was not created at %s", logPath)
 	}
 
 	// Clean up
-	os.RemoveAll("logs/broker_" + strconv.Itoa(int(broker.port)))
+	os.RemoveAll("broker/broker_logs")
 }
 
 // Test flush ticker
@@ -1332,7 +1347,7 @@ func TestFlushTicker(t *testing.T) {
 	_ = originalFlushInterval
 
 	// Clean up
-	os.RemoveAll("logs/broker_" + strconv.Itoa(int(broker.port)))
+	os.RemoveAll("broker/broker_logs")
 }
 
 // Test flushAllLogs with multiple topics
@@ -1380,7 +1395,7 @@ func TestFlushAllLogs_MultipleTopics(t *testing.T) {
 	for _, topicName := range topics {
 		for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
 			if port == broker.port {
-				logPath := "logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(partKey)) + "/segment_0.log"
+				logPath := "broker/broker_logs/logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(partKey)) + "/segment_0.log"
 				if _, err := os.Stat(logPath); err == nil {
 					flushedCount++
 				}
@@ -1395,7 +1410,653 @@ func TestFlushAllLogs_MultipleTopics(t *testing.T) {
 	t.Logf("Successfully flushed %d partitions across %d topics", flushedCount, len(topics))
 
 	// Clean up
-	os.RemoveAll("logs/broker_" + strconv.Itoa(int(broker.port)))
+	os.RemoveAll("broker/broker_logs")
+}
+
+// Test reading raw log files - verify content matches
+func TestFlushLogs_VerifyRawLogContent(t *testing.T) {
+	broker := setupBrokerWithEtcd(t)
+	defer cleanupEtcd(t, broker)
+
+	// Create topic
+	topicName := "raw-log-test"
+	createReq := &producerpb.CreateTopicRequest{
+		Topic:         topicName,
+		NumPartitions: 1,
+	}
+
+	_, err := broker.CreateTopic(context.Background(), createReq)
+	if err != nil {
+		t.Fatalf("Failed to create topic: %v", err)
+	}
+
+	// Find partition assigned to this broker
+	var assignedPartition PartitionKey
+	found := false
+	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
+		if port == broker.port {
+			assignedPartition = partKey
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Skip("No partition assigned to this broker")
+	}
+
+	// Publish messages with known content
+	expectedMessages := []string{"First message", "Second message", "Third message"}
+	for _, msg := range expectedMessages {
+		publishReq := &producerpb.PublishRequest{
+			Topic:        topicName,
+			PartitionKey: int32(assignedPartition),
+			Message:      msg,
+		}
+
+		_, err := broker.PublishMessage(context.Background(), publishReq)
+		if err != nil {
+			t.Fatalf("Failed to publish message: %v", err)
+		}
+	}
+
+	// Flush logs
+	partition := broker.Topics[topicName].Partitions[assignedPartition]
+	err = partition.flushLogs(broker.port, topicName, assignedPartition)
+	if err != nil {
+		t.Fatalf("Failed to flush logs: %v", err)
+	}
+
+	// Read raw log file
+	logPath := "broker/broker_logs/logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(assignedPartition)) + "/segment_0.log"
+	rawData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("Failed to read raw log file: %v", err)
+	}
+
+	// Verify raw data contains all messages concatenated
+	rawString := string(rawData)
+	for _, expectedMsg := range expectedMessages {
+		if !contains(rawString, expectedMsg) {
+			t.Errorf("Raw log does not contain expected message: %s", expectedMsg)
+		}
+	}
+
+	// Verify total size matches expected
+	expectedSize := 0
+	for _, msg := range expectedMessages {
+		expectedSize += len(msg)
+	}
+
+	if len(rawData) != expectedSize {
+		t.Errorf("Expected raw log size %d bytes, got %d bytes", expectedSize, len(rawData))
+	}
+
+	t.Logf("Raw log file verified: %d bytes containing %d messages", len(rawData), len(expectedMessages))
+
+	// Clean up
+	os.RemoveAll("broker/broker_logs")
+}
+
+// Test reading raw log files - verify offsets are correct
+func TestFlushLogs_VerifyOffsets(t *testing.T) {
+	broker := setupBrokerWithEtcd(t)
+	defer cleanupEtcd(t, broker)
+
+	// Create topic
+	topicName := "offset-test"
+	createReq := &producerpb.CreateTopicRequest{
+		Topic:         topicName,
+		NumPartitions: 1,
+	}
+
+	_, err := broker.CreateTopic(context.Background(), createReq)
+	if err != nil {
+		t.Fatalf("Failed to create topic: %v", err)
+	}
+
+	// Find partition assigned to this broker
+	var assignedPartition PartitionKey
+	found := false
+	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
+		if port == broker.port {
+			assignedPartition = partKey
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Skip("No partition assigned to this broker")
+	}
+
+	// Publish messages of different sizes to test offset calculation
+	messages := []struct {
+		content        string
+		expectedOffset int
+	}{
+		{"A", 0},           // Offset 0, size 1
+		{"BC", 1},          // Offset 1, size 2
+		{"DEF", 3},         // Offset 3, size 3
+		{"GHIJ", 6},        // Offset 6, size 4
+		{"KLMNOPQRST", 10}, // Offset 10, size 10
+	}
+
+	for _, msg := range messages {
+		publishReq := &producerpb.PublishRequest{
+			Topic:        topicName,
+			PartitionKey: int32(assignedPartition),
+			Message:      msg.content,
+		}
+
+		_, err := broker.PublishMessage(context.Background(), publishReq)
+		if err != nil {
+			t.Fatalf("Failed to publish message: %v", err)
+		}
+	}
+
+	// Verify in-memory offsets before flush
+	partition := broker.Topics[topicName].Partitions[assignedPartition]
+	for i, msg := range messages {
+		if partition.Messages[i].Offset != msg.expectedOffset {
+			t.Errorf("Message %d: expected offset %d, got %d", i, msg.expectedOffset, partition.Messages[i].Offset)
+		}
+		if string(partition.Messages[i].Data) != msg.content {
+			t.Errorf("Message %d: expected content %s, got %s", i, msg.content, string(partition.Messages[i].Data))
+		}
+	}
+
+	// Segment index is only created when logs are flushed
+	if len(partition.SegmentIndex) != 0 {
+		t.Errorf("Expected 0 segment index entries before flush, got %d", len(partition.SegmentIndex))
+	}
+
+	// Flush logs
+	err = partition.flushLogs(broker.port, topicName, assignedPartition)
+	if err != nil {
+		t.Fatalf("Failed to flush logs: %v", err)
+	}
+
+	// Verify segment index after flush (should have one segment)
+	if len(partition.SegmentIndex) != 1 {
+		t.Fatalf("Expected 1 segment index entry after flush, got %d", len(partition.SegmentIndex))
+	}
+
+	// Verify the segment starts at offset 0
+	if partition.SegmentIndex[0].StartOffset != 0 {
+		t.Errorf("Expected segment start offset 0, got %d", partition.SegmentIndex[0].StartOffset)
+	}
+
+	// Read raw log file and verify we can extract messages at correct offsets
+	logPath := "broker/broker_logs/logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(assignedPartition)) + "/segment_0.log"
+	rawData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("Failed to read raw log file: %v", err)
+	}
+
+	// Verify we can extract each message using the offsets from segment index
+	for i, msg := range messages {
+		startOffset := msg.expectedOffset
+		endOffset := startOffset + len(msg.content)
+
+		if endOffset > len(rawData) {
+			t.Fatalf("Message %d: end offset %d exceeds raw data length %d", i, endOffset, len(rawData))
+		}
+
+		extractedMsg := string(rawData[startOffset:endOffset])
+		if extractedMsg != msg.content {
+			t.Errorf("Message %d at offset %d: expected %s, got %s",
+				i, startOffset, msg.content, extractedMsg)
+		}
+	}
+
+	t.Logf("Successfully verified %d messages with correct offsets in raw log file", len(messages))
+
+	// Clean up
+	os.RemoveAll("broker/broker_logs")
+}
+
+// Test segment rotation with offset continuity
+func TestFlushLogs_SegmentRotationOffsetContinuity(t *testing.T) {
+	// Clean up any existing log files first
+	os.RemoveAll("broker/broker_logs")
+
+	broker := setupBrokerWithEtcd(t)
+	defer cleanupEtcd(t, broker)
+
+	// Create topic
+	topicName := "rotation-offset-test"
+	createReq := &producerpb.CreateTopicRequest{
+		Topic:         topicName,
+		NumPartitions: 1,
+	}
+
+	_, err := broker.CreateTopic(context.Background(), createReq)
+	if err != nil {
+		t.Fatalf("Failed to create topic: %v", err)
+	}
+
+	// Find partition assigned to this broker
+	var assignedPartition PartitionKey
+	found := false
+	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
+		if port == broker.port {
+			assignedPartition = partKey
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Skip("No partition assigned to this broker")
+	}
+
+	// Publish messages that will trigger segment rotation
+	// SegmentSize is 10KB (10240 bytes)
+	largeMessage := string(make([]byte, 3500)) // 3.5KB each
+	numMessages := 4                           // 14KB total, should create 2 segments
+
+	// With 3.5KB messages and 10KB segment size:
+	// - Messages 0,1 fit in segment 0 (7KB total)
+	// - Message 2 would exceed 10KB, so rotation happens
+	// - Messages 2,3 go to segment 7000 (7KB total)
+	expectedSegmentOffsets := []int{0, 7000} // Two segments
+
+	currentOffset := 0
+	for i := 0; i < numMessages; i++ {
+		publishReq := &producerpb.PublishRequest{
+			Topic:        topicName,
+			PartitionKey: int32(assignedPartition),
+			Message:      largeMessage,
+		}
+
+		_, err := broker.PublishMessage(context.Background(), publishReq)
+		if err != nil {
+			t.Fatalf("Failed to publish message %d: %v", i, err)
+		}
+
+		currentOffset += len(largeMessage)
+	}
+
+	// Flush logs
+	partition := broker.Topics[topicName].Partitions[assignedPartition]
+	err = partition.flushLogs(broker.port, topicName, assignedPartition)
+	if err != nil {
+		t.Fatalf("Failed to flush logs: %v", err)
+	}
+
+	// Verify multiple segments were created
+	dirPath := "broker/broker_logs/logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(assignedPartition))
+
+	files, err := os.ReadDir(dirPath)
+	if err != nil {
+		t.Fatalf("Failed to read log directory: %v", err)
+	}
+
+	segmentFiles := []string{}
+	for _, file := range files {
+		if !file.IsDir() && len(file.Name()) > 4 && file.Name()[len(file.Name())-4:] == ".log" {
+			segmentFiles = append(segmentFiles, file.Name())
+		}
+	}
+
+	if len(segmentFiles) < 2 {
+		t.Fatalf("Expected at least 2 segment files, got %d", len(segmentFiles))
+	}
+
+	t.Logf("Created %d segment files: %v", len(segmentFiles), segmentFiles)
+
+	// Verify NextOffset is correct
+	expectedFinalOffset := currentOffset
+	if partition.NextOffset != expectedFinalOffset {
+		t.Errorf("Expected NextOffset %d, got %d", expectedFinalOffset, partition.NextOffset)
+	}
+
+	// Verify all segment index entries have correct offsets
+	// (messages are cleared from memory after flush, so we verify via segment index)
+	if len(partition.SegmentIndex) != len(segmentFiles) {
+		t.Errorf("Expected %d segment index entries, got %d", len(segmentFiles), len(partition.SegmentIndex))
+	}
+
+	// Verify segment offsets match expected
+	if len(partition.SegmentIndex) >= 2 {
+		if partition.SegmentIndex[0].StartOffset != expectedSegmentOffsets[0] {
+			t.Errorf("Segment 0: expected start offset %d, got %d",
+				expectedSegmentOffsets[0], partition.SegmentIndex[0].StartOffset)
+		}
+		if partition.SegmentIndex[1].StartOffset != expectedSegmentOffsets[1] {
+			t.Errorf("Segment 1: expected start offset %d, got %d",
+				expectedSegmentOffsets[1], partition.SegmentIndex[1].StartOffset)
+		}
+	}
+
+	t.Logf("Verified offset continuity across %d segments with final offset %d",
+		len(segmentFiles), expectedFinalOffset)
+
+	// Clean up
+	os.RemoveAll("broker/broker_logs")
+}
+
+// Test reading raw log files and verifying offsets
+func TestFlushLogs_ReadRawLogFile(t *testing.T) {
+	broker := setupBrokerWithEtcd(t)
+	defer cleanupEtcd(t, broker)
+
+	// Create topic
+	topicName := "raw-log-read-test"
+	createReq := &producerpb.CreateTopicRequest{
+		Topic:         topicName,
+		NumPartitions: 1,
+	}
+
+	_, err := broker.CreateTopic(context.Background(), createReq)
+	if err != nil {
+		t.Fatalf("Failed to create topic: %v", err)
+	}
+
+	// Find partition assigned to this broker
+	var assignedPartition PartitionKey
+	found := false
+	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
+		if port == broker.port {
+			assignedPartition = partKey
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Skip("No partition assigned to this broker")
+	}
+
+	// Publish messages with known content
+	messages := []string{"Hello", "World", "Kafka"}
+
+	for _, msg := range messages {
+		publishReq := &producerpb.PublishRequest{
+			Topic:        topicName,
+			PartitionKey: int32(assignedPartition),
+			Message:      msg,
+		}
+
+		_, err := broker.PublishMessage(context.Background(), publishReq)
+		if err != nil {
+			t.Fatalf("Failed to publish message: %v", err)
+		}
+	}
+
+	// Flush logs
+	partition := broker.Topics[topicName].Partitions[assignedPartition]
+	err = partition.flushLogs(broker.port, topicName, assignedPartition)
+	if err != nil {
+		t.Fatalf("Failed to flush logs: %v", err)
+	}
+
+	// Read the raw log file
+	logPath := "broker/broker_logs/logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(assignedPartition)) + "/segment_0.log"
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+
+	// Verify the content
+	expectedContent := "HelloWorldKafka"
+	if string(logData) != expectedContent {
+		t.Errorf("Expected log content '%s', got '%s'", expectedContent, string(logData))
+	}
+
+	// Verify the size
+	expectedSize := len(expectedContent)
+	if len(logData) != expectedSize {
+		t.Errorf("Expected log size %d, got %d", expectedSize, len(logData))
+	}
+
+	// Verify segment index has correct offsets and sizes
+	if len(partition.SegmentIndex) != 1 {
+		t.Fatalf("Expected 1 segment, got %d", len(partition.SegmentIndex))
+	}
+
+	if partition.SegmentIndex[0].StartOffset != 0 {
+		t.Errorf("Expected segment start offset 0, got %d", partition.SegmentIndex[0].StartOffset)
+	}
+
+	if partition.SegmentIndex[0].Size != expectedSize {
+		t.Errorf("Expected segment size %d, got %d", expectedSize, partition.SegmentIndex[0].Size)
+	}
+
+	t.Logf("Successfully verified raw log file contains: %s", expectedContent)
+
+	// Clean up
+	os.RemoveAll("broker/broker_logs")
+}
+
+// Test reading raw log files across multiple segments
+func TestFlushLogs_ReadRawLogFileMultipleSegments(t *testing.T) {
+	// Clean up any existing log files first
+	os.RemoveAll("broker/broker_logs")
+
+	broker := setupBrokerWithEtcd(t)
+	defer cleanupEtcd(t, broker)
+
+	// Create topic
+	topicName := "multi-segment-raw-read"
+	createReq := &producerpb.CreateTopicRequest{
+		Topic:         topicName,
+		NumPartitions: 1,
+	}
+
+	_, err := broker.CreateTopic(context.Background(), createReq)
+	if err != nil {
+		t.Fatalf("Failed to create topic: %v", err)
+	}
+
+	// Find partition assigned to this broker
+	var assignedPartition PartitionKey
+	found := false
+	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
+		if port == broker.port {
+			assignedPartition = partKey
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Skip("No partition assigned to this broker")
+	}
+
+	// Publish large messages to trigger segment rotation
+	// SegmentSize is 10KB (10240 bytes)
+	largeMessage := string(make([]byte, 3500)) // 3.5KB message
+	numMessages := 4                           // 14KB total, should create 2 segments
+
+	for i := 0; i < numMessages; i++ {
+		publishReq := &producerpb.PublishRequest{
+			Topic:        topicName,
+			PartitionKey: int32(assignedPartition),
+			Message:      largeMessage + strconv.Itoa(i),
+		}
+
+		_, err := broker.PublishMessage(context.Background(), publishReq)
+		if err != nil {
+			t.Fatalf("Failed to publish message %d: %v", i, err)
+		}
+	}
+
+	// Flush logs
+	partition := broker.Topics[topicName].Partitions[assignedPartition]
+	err = partition.flushLogs(broker.port, topicName, assignedPartition)
+	if err != nil {
+		t.Fatalf("Failed to flush logs: %v", err)
+	}
+
+	// Read and verify segment files
+	dirPath := "broker/broker_logs/logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(assignedPartition))
+
+	// Read segment 0
+	segment0Path := dirPath + "/segment_0.log"
+	segment0Data, err := os.ReadFile(segment0Path)
+	if err != nil {
+		t.Fatalf("Failed to read segment 0: %v", err)
+	}
+
+	// Segment 0 should contain first 2 messages (total 7002 bytes, before rotation at 10KB)
+	expectedSegment0Content := largeMessage + "0" + largeMessage + "1"
+	if string(segment0Data) != expectedSegment0Content {
+		t.Errorf("Segment 0 content mismatch. Expected length %d, got %d", len(expectedSegment0Content), len(segment0Data))
+	}
+
+	t.Logf("Segment 0 verified: %d bytes", len(segment0Data))
+
+	// Read segment at offset 7002 (3rd message triggers rotation)
+	segment1Path := dirPath + "/segment_7002.log"
+	segment1Data, err := os.ReadFile(segment1Path)
+	if err != nil {
+		t.Fatalf("Failed to read segment at offset 7002: %v", err)
+	}
+
+	expectedSegment1Content := largeMessage + "2" + largeMessage + "3"
+	if string(segment1Data) != expectedSegment1Content {
+		t.Errorf("Segment 7002 content mismatch. Expected length %d, got %d", len(expectedSegment1Content), len(segment1Data))
+	}
+
+	t.Logf("Segment 7002 verified: %d bytes", len(segment1Data))
+
+	// Verify segment index
+	if len(partition.SegmentIndex) != 2 {
+		t.Fatalf("Expected 2 segments in index, got %d", len(partition.SegmentIndex))
+	}
+
+	// First segment should start at offset 0
+	if partition.SegmentIndex[0].StartOffset != 0 {
+		t.Errorf("Segment 0: expected start offset 0, got %d", partition.SegmentIndex[0].StartOffset)
+	}
+
+	// Second segment should start at offset 7002
+	if partition.SegmentIndex[1].StartOffset != 7002 {
+		t.Errorf("Segment 1: expected start offset 7002, got %d", partition.SegmentIndex[1].StartOffset)
+	}
+
+	// Verify NextOffset
+	expectedNextOffset := 10503 + len(largeMessage) + 1 // offset + message + "3"
+	if partition.NextOffset != expectedNextOffset {
+		t.Errorf("Expected NextOffset %d, got %d", expectedNextOffset, partition.NextOffset)
+	}
+
+	t.Logf("Successfully verified %d segments with total %d bytes", len(partition.SegmentIndex), len(segment0Data)+len(segment1Data))
+
+	// Clean up
+	os.RemoveAll("broker/broker_logs")
+}
+
+// Test verifying human-readable logs match raw logs
+func TestFlushLogs_HumanReadableLogsMatchRaw(t *testing.T) {
+	// Temporarily enable debug mode for this test
+	originalDebugMode := debugMode
+	debugMode = true
+	defer func() { debugMode = originalDebugMode }()
+
+	broker := setupBrokerWithEtcd(t)
+	defer cleanupEtcd(t, broker)
+
+	// Create topic
+	topicName := "human-readable-test"
+	createReq := &producerpb.CreateTopicRequest{
+		Topic:         topicName,
+		NumPartitions: 1,
+	}
+
+	_, err := broker.CreateTopic(context.Background(), createReq)
+	if err != nil {
+		t.Fatalf("Failed to create topic: %v", err)
+	}
+
+	// Find partition assigned to this broker
+	var assignedPartition PartitionKey
+	found := false
+	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
+		if port == broker.port {
+			assignedPartition = partKey
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Skip("No partition assigned to this broker")
+	}
+
+	// Publish messages
+	messages := []struct {
+		content string
+		offset  int
+	}{
+		{"First message", 0},
+		{"Second message", 13},
+		{"Third message", 27},
+	}
+
+	for _, msg := range messages {
+		publishReq := &producerpb.PublishRequest{
+			Topic:        topicName,
+			PartitionKey: int32(assignedPartition),
+			Message:      msg.content,
+		}
+
+		_, err := broker.PublishMessage(context.Background(), publishReq)
+		if err != nil {
+			t.Fatalf("Failed to publish message: %v", err)
+		}
+	}
+
+	// Flush logs
+	partition := broker.Topics[topicName].Partitions[assignedPartition]
+	err = partition.flushLogs(broker.port, topicName, assignedPartition)
+	if err != nil {
+		t.Fatalf("Failed to flush logs: %v", err)
+	}
+
+	// Read raw log file
+	rawLogPath := "broker/broker_logs/logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(assignedPartition)) + "/segment_0.log"
+	rawLogData, err := os.ReadFile(rawLogPath)
+	if err != nil {
+		t.Fatalf("Failed to read raw log file: %v", err)
+	}
+
+	// Read human-readable log file
+	humanReadablePath := "broker/broker_logs/readable_logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(assignedPartition)) + "/segment_0.log"
+	humanReadableData, err := os.ReadFile(humanReadablePath)
+	if err != nil {
+		t.Fatalf("Failed to read human-readable log file: %v", err)
+	}
+
+	// Verify raw log contains all messages concatenated
+	expectedRaw := "First messageSecond messageThird message"
+	if string(rawLogData) != expectedRaw {
+		t.Errorf("Raw log mismatch. Expected '%s', got '%s'", expectedRaw, string(rawLogData))
+	}
+
+	// Verify human-readable log contains offset annotations
+	humanReadableStr := string(humanReadableData)
+	for _, msg := range messages {
+		expectedLine := "Offset " + strconv.Itoa(msg.offset) + ": " + msg.content
+		if !contains(humanReadableStr, expectedLine) {
+			t.Errorf("Human-readable log missing expected line: %s", expectedLine)
+		}
+	}
+
+	t.Logf("Raw log: %d bytes", len(rawLogData))
+	t.Logf("Human-readable log:\n%s", string(humanReadableData))
+
+	// Clean up
+	os.RemoveAll("broker/broker_logs")
+}
+
+// Helper function to check if a string contains a substring
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) &&
+		(s == substr || len(s) > len(substr) &&
+			(s[:len(substr)] == substr || contains(s[1:], substr)))
 }
 
 // Helper function to setup broker with etcd for testing

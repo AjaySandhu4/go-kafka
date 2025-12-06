@@ -56,12 +56,8 @@ func (b *brokerServer) PublishMessage(ctx context.Context, req *producerpb.Publi
 		Offset: partition.NextOffset,
 		Data:   messageBytes,
 	})
-	partition.SegmentIndex = append(partition.SegmentIndex, &Segment{
-		StartOffset: partition.NextOffset,
-		Size:        len(messageBytes),
-	})
+	log.Printf("Message published to topic %s partition %d at offset %d", req.Topic, partitionKey, partition.NextOffset)
 	partition.NextOffset += len(messageBytes)
-	log.Printf("Message published to topic %s partition %d at offset %d", req.Topic, partitionKey, partition.SegmentIndex[len(partition.SegmentIndex)-1].StartOffset)
 
 	return &producerpb.PublishResponse{Success: true}, nil
 }

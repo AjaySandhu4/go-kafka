@@ -1,3 +1,3 @@
 # Ignore etcd data directories
 etcd/cluster-data/
-logs/
+broker/broker_logs/

@@ -66,6 +66,8 @@ const SegmentSize = 1024 * 10 // 10KB for testing
 const MsgFlushThreshold = 100 // Flush after every 100 messages for testing
 const FlushInterval = 5 * time.Second
 
+var debugMode bool = true
+
 // TODO : Implement PartitionMetadata struct
 // type PartitionMetadata struct {
 // 	brokerPort int

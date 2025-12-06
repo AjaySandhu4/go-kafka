@@ -61,7 +61,8 @@ func (p *Partition) flushLogs(brokerPort Port, topicName string, partitionKey Pa
 		return nil // Nothing to flush
 	}
 	if lastPersistedSegment == -1 {
-		// No segments persisted yet, start from the beginning
+		// No segments persisted yet, create the first segment starting from the first message's offset
+		p.createNewSegment(messagesToFlush[0].Offset)
 		lastPersistedSegment = messagesToFlush[0].Offset
 	}
 	segmentIndexEntry, err := p.GetSegment(lastPersistedSegment)
@@ -70,7 +71,7 @@ func (p *Partition) flushLogs(brokerPort Port, topicName string, partitionKey Pa
 		return errors.New("Failed to get segment index: " + err.Error())
 	}
 
-	segmentFile, err := createSegmentFile(brokerPort, topicName, partitionKey, lastPersistedSegment)
+	segmentFile, err := OpenSegmentFile(brokerPort, topicName, partitionKey, lastPersistedSegment, debugMode)
 	if err != nil {
 		p.partitionMu.RUnlock()
 		return errors.New("Failed to open log file for writing: " + err.Error())
@@ -78,24 +79,30 @@ func (p *Partition) flushLogs(brokerPort Port, topicName string, partitionKey Pa
 
 	for _, msg := range messagesToFlush {
 		if msg.Offset <= lastPersistedOffset {
-			log.Println("Skipping already persisted message at offset (this shouldn't happen)", msg.Offset)
+			log.Println("Skipping already persisted message at offset (this shouldn't happen in normal operation)", msg.Offset)
 			continue // Skip already persisted messages
 		}
 		if segmentIndexEntry.Size+len(msg.Data) > SegmentSize {
 			log.Println("Segment size limit reached, stopping flush for this segment and creating new segment")
 			segmentFile.Close()
 			p.createNewSegment(msg.Offset)
-			segmentFile, err = createSegmentFile(brokerPort, topicName, partitionKey, msg.Offset)
+			segmentIndexEntry, err = p.GetSegment(msg.Offset)
+			if err != nil {
+				p.partitionMu.RUnlock()
+				return errors.New("Failed to get new segment index: " + err.Error())
+			}
+			segmentFile, err = OpenSegmentFile(brokerPort, topicName, partitionKey, msg.Offset, debugMode)
+
 			if err != nil {
 				p.partitionMu.RUnlock()
 				return errors.New("Failed to create new segment file: " + err.Error())
 			}
 		}
-		segmentFile.Write(msg.Data)
-		segmentFile.Write([]byte("\n")) // Write a newline after each message (good for debugging but may be harder to parse later)
+		segmentFile.Write(msg)
 		p.LastPersistedOffset = msg.Offset
 		segmentIndexEntry.Size += len(msg.Data)
 	}
+	p.Messages = []Message{} // Clear in-memory messages after flushing
 	segmentFile.Close()
 	p.partitionMu.RUnlock()
 	return nil

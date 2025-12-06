@@ -14,7 +14,7 @@ clean_cluster:
 	rm -rf etcd/cluster-data
 
 clean_logs:
-	rm -rf ./logs
+	rm -rf ./broker/logs
 
 clean_data: clean_logs clean_cluster
 
