@@ -7,6 +7,7 @@ import (
 	"log"
 	"math/rand"
 	"strconv"
+	"sync"
 
 	producerpb "go-kafka/proto/producer"
 
@@ -14,42 +15,53 @@ import (
 )
 
 func (b *brokerServer) PublishMessage(ctx context.Context, req *producerpb.PublishRequest) (*producerpb.PublishResponse, error) {
-	b.topicsMu.Lock()
-	defer b.topicsMu.Unlock()
-
+	b.topicsMu.RLock()
 	log.Printf("Received message for topic %s: %s", req.Topic, req.Message)
 	if b.Topics[req.Topic] == nil {
 		log.Printf("Topic %s does not exist", req.Topic)
 		return &producerpb.PublishResponse{Success: false}, nil
 	}
+	defer b.topicsMu.RUnlock()
 
+	b.metadataMu.RLock()
 	partitionKey := PartitionKey(req.PartitionKey)
 	if b.ClusterMetadata.TopicsMetadata.Topics[req.Topic].Partitions[partitionKey] != b.port {
 		log.Printf("Partition %d is not assigned to this broker", partitionKey)
 		return &producerpb.PublishResponse{Success: false}, nil
 	}
+	defer b.metadataMu.RUnlock()
+
+	b.Topics[req.Topic].topicMu.Lock()
+	defer b.Topics[req.Topic].topicMu.Unlock()
 
 	log.Printf("Publishing to partition %d", partitionKey)
 	partition := b.Topics[req.Topic].Partitions[partitionKey]
 	if partition == nil {
 		partition = &Partition{
-			Key:        partitionKey,
-			Index:      []IndexEntry{},
-			NextOffset: 0,
-			Messages:   [][]byte{},
+			Key:                  partitionKey,
+			SegmentIndex:         []*Segment{},
+			NextOffset:           0,
+			LastPersistedOffset:  -1, // No messages persisted yet
+			LastPersistedSegment: -1, // No segments persisted yet
+			Messages:             []Message{},
+			partitionMu:          sync.RWMutex{},
 		}
 		b.Topics[req.Topic].Partitions[partitionKey] = partition
 	}
-
+	partition.partitionMu.Lock()
+	defer partition.partitionMu.Unlock()
 	// Append message
 	messageBytes := []byte(req.Message)
-	partition.Messages = append(partition.Messages, messageBytes)
-	partition.Index = append(partition.Index, IndexEntry{
+	partition.Messages = append(partition.Messages, Message{
 		Offset: partition.NextOffset,
-		Size:   len(messageBytes),
+		Data:   messageBytes,
+	})
+	partition.SegmentIndex = append(partition.SegmentIndex, &Segment{
+		StartOffset: partition.NextOffset,
+		Size:        len(messageBytes),
 	})
 	partition.NextOffset += len(messageBytes)
-	log.Printf("Message published to topic %s partition %d at offset %d", req.Topic, partitionKey, partition.Index[len(partition.Index)-1].Offset)
+	log.Printf("Message published to topic %s partition %d at offset %d", req.Topic, partitionKey, partition.SegmentIndex[len(partition.SegmentIndex)-1].StartOffset)
 
 	return &producerpb.PublishResponse{Success: true}, nil
 }
@@ -67,10 +79,11 @@ func (b *brokerServer) CreateTopic(ctx context.Context, req *producerpb.CreateTo
 		return &producerpb.CreateTopicResponse{Success: false}, nil
 	}
 
-	newTopic := &Topic{
+	newTopic := &TopicData{
 		Name:          req.Topic,
 		NumPartitions: int(req.NumPartitions),
 		Partitions:    make(map[PartitionKey]*Partition),
+		topicMu:       sync.RWMutex{},
 	}
 
 	if b.etcdClient == nil {

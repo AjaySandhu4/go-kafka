@@ -17,32 +17,22 @@ import (
 
 type brokerServer struct {
 	producerpb.UnimplementedProducerServiceServer
-	Topics          map[string]*Topic
+	Topics          map[string]*TopicData
 	ClusterMetadata ClusterMetadata
 	port            Port
 	etcdClient      *clientv3.Client
 	topicsMu        sync.RWMutex
 	metadataMu      sync.RWMutex
+	leaseID         clientv3.LeaseID
 	ctx             context.Context
 	cancel          context.CancelFunc
 }
 
-type Topic struct {
+type TopicData struct {
 	Name          string
 	NumPartitions int
 	Partitions    map[PartitionKey]*Partition // Each partition holds a slice of messages
-}
-
-type Partition struct {
-	Key        PartitionKey
-	Index      []IndexEntry
-	NextOffset int
-	Messages   [][]byte
-}
-
-type IndexEntry struct {
-	Offset int
-	Size   int
+	topicMu       sync.RWMutex
 }
 
 type ClusterMetadata struct {
@@ -72,6 +62,10 @@ type BrokersMetadata struct {
 type Port int
 type PartitionKey int
 
+const SegmentSize = 1024 * 10 // 10KB for testing
+const MsgFlushThreshold = 100 // Flush after every 100 messages for testing
+const FlushInterval = 5 * time.Second
+
 // TODO : Implement PartitionMetadata struct
 // type PartitionMetadata struct {
 // 	brokerPort int
@@ -81,7 +75,7 @@ type PartitionKey int
 func NewBrokerServer() *brokerServer {
 	log.Println("Creating new BrokerServer instance...")
 	return &brokerServer{
-		Topics: make(map[string]*Topic), // Initialize the map
+		Topics: make(map[string]*TopicData), // Initialize the map
 		ClusterMetadata: ClusterMetadata{
 			TopicsMetadata:  &TopicsMetadata{Topics: make(map[string]*TopicMetadata)},
 			BrokersMetadata: &BrokersMetadata{Brokers: make(map[Port]*BrokerMetadata)},
@@ -91,13 +85,11 @@ func NewBrokerServer() *brokerServer {
 
 func (b *brokerServer) StartBroker() {
 	log.Println("Starting Broker...")
-	b.metadataMu.Lock()
-	defer b.metadataMu.Unlock()
-
 	var err error
 
 	b.ctx, b.cancel = context.WithCancel(context.Background())
 
+	log.Println("Connecting to etcd...")
 	// Initialize etcd client
 	b.etcdClient, err = clientv3.New(clientv3.Config{
 		Endpoints:   []string{"http://127.0.0.1:2379"},
@@ -112,7 +104,9 @@ func (b *brokerServer) StartBroker() {
 
 	b.fetchBrokerMetadata()
 	b.fetchTopicMetadata()
+	b.fetchOrElectController()
 
+	b.registerControllerWatcher()
 	b.registerBrokerWatcher()
 	b.registerTopicWatcher()
 
@@ -130,6 +124,11 @@ func (b *brokerServer) StartBroker() {
 		}
 	}()
 
+	// Start log flush ticker
+	// go b.flushTicker()
+
+	log.Println("Broker started")
+
 }
 
 func (b *brokerServer) registerBrokerInEtcd() {
@@ -146,6 +145,7 @@ func (b *brokerServer) registerBrokerInEtcd() {
 	if err != nil {
 		log.Fatalf("Failed to grant lease: %v", err)
 	}
+	b.leaseID = leaseResp.ID
 
 	b.port = Port(8080 + len(brokerGetResp.Kvs)) // Assignment port number based on number of existing brokers
 	_, err = b.etcdClient.Put(b.ctx, "/broker/"+strconv.Itoa(int(b.port)), "", clientv3.WithLease(leaseResp.ID))
@@ -166,9 +166,6 @@ func (b *brokerServer) registerBrokerInEtcd() {
 		}
 		log.Println("Lease keep alive channel closed")
 	}()
-
-	// Check for controller key
-	b.fetchOrElectController()
 
 	log.Printf("Broker registered in etcd with port %d", b.port)
 }
@@ -192,6 +189,18 @@ func (b *brokerServer) registerBrokerWatcher() {
 			for _, ev := range watchResp.Events {
 				b.fetchBrokerMetadata()
 				log.Printf("Broker metadata refreshed due to etcd event: %s %q : %q", ev.Type, ev.Kv.Key, ev.Kv.Value)
+			}
+		}
+	}()
+}
+
+func (b *brokerServer) registerControllerWatcher() {
+	controllerWatchCh := b.etcdClient.Watch(b.ctx, "/controller", clientv3.WithPrefix())
+	go func() {
+		for watchResp := range controllerWatchCh {
+			for _, ev := range watchResp.Events {
+				b.fetchOrElectController()
+				log.Printf("Controller metadata refreshed due to etcd event: %s %q : %q", ev.Type, ev.Kv.Key, ev.Kv.Value)
 			}
 		}
 	}()
@@ -233,35 +242,47 @@ func (b *brokerServer) fetchBrokerMetadata() error {
 		b.ClusterMetadata.BrokersMetadata.Brokers[Port(port)] = &BrokerMetadata{Port: Port(port)}
 	}
 
-	b.fetchOrElectController()
+	// b.fetchOrElectController()
 
 	return nil
 }
 
-func (b *brokerServer) fetchOrElectController() (bool, error) {
+func (b *brokerServer) fetchOrElectController() error {
+	b.metadataMu.Lock()
+	defer b.metadataMu.Unlock()
+	log.Println("Fetching or electing controller...")
+	if b.etcdClient == nil {
+		log.Println("Etcd client is not initialized")
+		return errors.New("Etcd client is not initialized")
+	}
 	// Create a transaction
 	txn := b.etcdClient.Txn(context.Background())
 
-	// Compare: Check if controller key does NOT exist (version = 0)
-	// Then: Create the controller key with our port
-	// Else: Do nothing
 	txnResp, err := txn.
-		If(clientv3.Compare(clientv3.Version("controller"), "=", 0)).  // Test: key doesn't exist
-		Then(clientv3.OpPut("controller", strconv.Itoa(int(b.port)))). // Set: create with our port
+		If(clientv3.Compare(clientv3.Version("controller"), "=", 0)).                                 // Test: key doesn't exist
+		Then(clientv3.OpPut("controller", strconv.Itoa(int(b.port)), clientv3.WithLease(b.leaseID))). // Set: create with our port
+		Else(clientv3.OpGet("controller")).                                                           // Get: retrieve existing controller
 		Commit()
 
 	if err != nil {
-		return false, err
+		return err
 	}
 
 	if txnResp.Succeeded {
 		log.Printf("This broker (port %d) elected as controller", b.port)
 		b.ClusterMetadata.BrokersMetadata.Controller = b.port
-		return true, nil
-	} else {
-		log.Printf("Another broker is already controller")
-		return false, nil
+		return nil
 	}
+	getResp := txnResp.Responses[0].GetResponseRange()
+	controllerPort, err := strconv.Atoi(string(getResp.Kvs[0].Value))
+	log.Printf("A broker %d is already the controller (as seen by broker %d)", controllerPort, b.port)
+	if err != nil {
+		log.Printf("Invalid controller port in etcd: %s", getResp.Kvs[0].Value)
+		return err
+	}
+
+	b.ClusterMetadata.BrokersMetadata.Controller = Port(controllerPort)
+	return nil
 }
 
 func (b *brokerServer) fetchTopicMetadata() error {
@@ -287,4 +308,90 @@ func (b *brokerServer) fetchTopicMetadata() error {
 		b.ClusterMetadata.TopicsMetadata.Topics[meta.Topic] = &meta
 	}
 	return nil
+}
+
+func (b *brokerServer) flushLogs(topicName string, partitionKey PartitionKey) error {
+	b.topicsMu.RLock()
+	topic, exists := b.Topics[topicName]
+	b.topicsMu.RUnlock()
+	if !exists {
+		return errors.New("Topic does not exist")
+	}
+
+	topic.topicMu.RLock()
+	partition, exists := topic.Partitions[partitionKey]
+	topic.topicMu.RUnlock()
+	if !exists {
+		return errors.New("Partition does not exist")
+	}
+
+	partition.partitionMu.RLock()
+	lastPersistedOffset := partition.LastPersistedOffset
+	lastPersistedSegment := partition.LastPersistedSegment
+	messagesToFlush := partition.Messages
+	if len(messagesToFlush) == 0 {
+		partition.partitionMu.RUnlock()
+		log.Println("No messages to flush for topic", topicName, "partition", partitionKey)
+		return nil // Nothing to flush
+	}
+	segmentIndexEntry, err := partition.GetSegment(lastPersistedSegment)
+	if err != nil {
+		partition.partitionMu.RUnlock()
+		return errors.New("Failed to get segment index: " + err.Error())
+	}
+
+	segmentFile, err := createSegmentFile(b.port, topicName, partitionKey, lastPersistedSegment)
+	if err != nil {
+		partition.partitionMu.RUnlock()
+		return errors.New("Failed to open log file for writing: " + err.Error())
+	}
+
+	for _, msg := range messagesToFlush {
+		if msg.Offset <= lastPersistedOffset {
+			log.Println("Skipping already persisted message at offset (this shouldn't happen)", msg.Offset)
+			continue // Skip already persisted messages
+		}
+		if segmentIndexEntry.Size+len(msg.Data) > SegmentSize {
+			log.Println("Segment size limit reached, stopping flush for this segment and creating new segment")
+			segmentFile.Close()
+			partition.createNewSegment(msg.Offset)
+			segmentFile, err = createSegmentFile(b.port, topicName, partitionKey, msg.Offset)
+			if err != nil {
+				partition.partitionMu.RUnlock()
+				return errors.New("Failed to create new segment file: " + err.Error())
+			}
+		}
+		segmentFile.Write(msg.Data)
+		segmentFile.Write([]byte("\n")) // Write a newline after each message (good for debugging but may be harder to parse later)
+		partition.LastPersistedOffset = msg.Offset
+		segmentIndexEntry.Size += len(msg.Data)
+	}
+	segmentFile.Close()
+	partition.partitionMu.RUnlock()
+	return nil
+}
+
+func (b *brokerServer) flushTicker() {
+	ticker := time.NewTicker(FlushInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			log.Println("Flush ticker triggered - flushing all logs")
+			b.flushAllLogs()
+		case <-b.ctx.Done():
+			log.Println("Flush ticker stopping due to broker shutdown")
+			return
+		}
+	}
+}
+
+func (b *brokerServer) flushAllLogs() {
+	for topicName, topic := range b.Topics {
+		for partitionKey := range topic.Partitions {
+			if err := b.flushLogs(topicName, partitionKey); err != nil {
+				log.Printf("Error flushing logs for topic %s partition %d: %v", topicName, partitionKey, err)
+			}
+		}
+	}
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	producerpb "go-kafka/proto/producer"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -204,8 +206,8 @@ func TestPublishMessage_Success(t *testing.T) {
 		t.Errorf("Expected 1 message, got %d", len(partition.Messages))
 	}
 
-	if string(partition.Messages[0]) != publishReq.Message {
-		t.Errorf("Expected message %s, got %s", publishReq.Message, string(partition.Messages[0]))
+	if string(partition.Messages[0].Data) != publishReq.Message {
+		t.Errorf("Expected message %s, got %s", publishReq.Message, string(partition.Messages[0].Data))
 	}
 }
 
@@ -315,14 +317,14 @@ func TestPublishMessage_MultipleMessages(t *testing.T) {
 	}
 
 	for i, msg := range messages {
-		if string(partition.Messages[i]) != msg {
-			t.Errorf("Message %d: expected %s, got %s", i, msg, string(partition.Messages[i]))
+		if string(partition.Messages[i].Data) != msg {
+			t.Errorf("Message %d: expected %s, got %s", i, msg, string(partition.Messages[i].Data))
 		}
 	}
 
 	// Verify index entries
-	if len(partition.Index) != len(messages) {
-		t.Errorf("Expected %d index entries, got %d", len(messages), len(partition.Index))
+	if len(partition.SegmentIndex) != len(messages) {
+		t.Errorf("Expected %d index entries, got %d", len(messages), len(partition.SegmentIndex))
 	}
 }
 
@@ -417,13 +419,13 @@ func TestPartitionIndex(t *testing.T) {
 
 	// Verify index entries
 	partition := broker.Topics[topicName].Partitions[assignedPartition]
-	if len(partition.Index) != len(messages) {
-		t.Fatalf("Expected %d index entries, got %d", len(messages), len(partition.Index))
+	if len(partition.SegmentIndex) != len(messages) {
+		t.Fatalf("Expected %d index entries, got %d", len(messages), len(partition.SegmentIndex))
 	}
 
-	for i, entry := range partition.Index {
-		if entry.Offset != expectedOffsets[i] {
-			t.Errorf("Index entry %d: expected offset %d, got %d", i, expectedOffsets[i], entry.Offset)
+	for i, entry := range partition.SegmentIndex {
+		if entry.StartOffset != expectedOffsets[i] {
+			t.Errorf("Index entry %d: expected offset %d, got %d", i, expectedOffsets[i], entry.StartOffset)
 		}
 		if entry.Size != len(messages[i]) {
 			t.Errorf("Index entry %d: expected size %d, got %d", i, len(messages[i]), entry.Size)
@@ -498,6 +500,338 @@ func TestPublishMessage_Concurrent(t *testing.T) {
 	if len(partition.Messages) != numMessages {
 		t.Errorf("Expected %d messages after concurrent writes, got %d", numMessages, len(partition.Messages))
 	}
+}
+
+// Test controller election - single broker becomes controller
+func TestControllerElection_SingleBroker(t *testing.T) {
+	broker := NewBrokerServer()
+
+	// Connect to etcd
+	etcdClient, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"http://127.0.0.1:2379"},
+		DialTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Skipf("Skipping test: etcd not available: %v", err)
+	}
+	defer etcdClient.Close()
+
+	// Clean up any existing controller key
+	_, err = etcdClient.Delete(context.Background(), "controller")
+	if err != nil {
+		t.Fatalf("Failed to clean up controller key: %v", err)
+	}
+
+	broker.etcdClient = etcdClient
+	broker.ctx, broker.cancel = context.WithCancel(context.Background())
+	defer broker.cancel()
+
+	// Grant a lease for the broker
+	leaseResp, err := etcdClient.Grant(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("Failed to grant lease: %v", err)
+	}
+	broker.leaseID = leaseResp.ID
+	broker.port = Port(8080)
+
+	broker.ClusterMetadata = ClusterMetadata{
+		TopicsMetadata:  &TopicsMetadata{Topics: make(map[string]*TopicMetadata)},
+		BrokersMetadata: &BrokersMetadata{Brokers: make(map[Port]*BrokerMetadata)},
+	}
+
+	// Try to elect controller
+	err = broker.fetchOrElectController()
+	if err != nil {
+		t.Fatalf("Failed to elect controller: %v", err)
+	}
+
+	if broker.ClusterMetadata.BrokersMetadata.Controller != broker.port {
+		t.Errorf("Expected controller port to be %d, got %d", broker.port, broker.ClusterMetadata.BrokersMetadata.Controller)
+	}
+
+	// Verify controller key exists in etcd
+	resp, err := etcdClient.Get(context.Background(), "controller")
+	if err != nil {
+		t.Fatalf("Failed to get controller key: %v", err)
+	}
+
+	if len(resp.Kvs) == 0 {
+		t.Fatal("Controller key not found in etcd")
+	}
+
+	controllerPort, err := strconv.Atoi(string(resp.Kvs[0].Value))
+	if err != nil {
+		t.Fatalf("Failed to parse controller port: %v", err)
+	}
+
+	if Port(controllerPort) != broker.port {
+		t.Errorf("Expected controller port in etcd to be %d, got %d", broker.port, controllerPort)
+	}
+
+	// Clean up
+	_, _ = etcdClient.Delete(context.Background(), "controller")
+}
+
+// Test controller election - second broker doesn't become controller
+func TestControllerElection_SecondBrokerFails(t *testing.T) {
+	// Connect to etcd
+	etcdClient, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"http://127.0.0.1:2379"},
+		DialTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Skipf("Skipping test: etcd not available: %v", err)
+	}
+	defer etcdClient.Close()
+
+	// Clean up any existing controller key
+	_, _ = etcdClient.Delete(context.Background(), "controller")
+
+	// Create first broker and make it controller
+	broker1 := NewBrokerServer()
+	broker1.etcdClient = etcdClient
+	broker1.ctx, broker1.cancel = context.WithCancel(context.Background())
+	defer broker1.cancel()
+
+	leaseResp1, err := etcdClient.Grant(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("Failed to grant lease for broker1: %v", err)
+	}
+	broker1.leaseID = leaseResp1.ID
+	broker1.port = Port(8080)
+	broker1.ClusterMetadata = ClusterMetadata{
+		TopicsMetadata:  &TopicsMetadata{Topics: make(map[string]*TopicMetadata)},
+		BrokersMetadata: &BrokersMetadata{Brokers: make(map[Port]*BrokerMetadata)},
+	}
+
+	// First broker becomes controller
+	err = broker1.fetchOrElectController()
+	if err != nil {
+		t.Fatalf("Broker1 failed to elect controller: %v", err)
+	}
+
+	// Create second broker
+	broker2 := NewBrokerServer()
+	broker2.etcdClient = etcdClient
+	broker2.ctx, broker2.cancel = context.WithCancel(context.Background())
+	defer broker2.cancel()
+
+	leaseResp2, err := etcdClient.Grant(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("Failed to grant lease for broker2: %v", err)
+	}
+	broker2.leaseID = leaseResp2.ID
+	broker2.port = Port(8081)
+	broker2.ClusterMetadata = ClusterMetadata{
+		TopicsMetadata:  &TopicsMetadata{Topics: make(map[string]*TopicMetadata)},
+		BrokersMetadata: &BrokersMetadata{Brokers: make(map[Port]*BrokerMetadata)},
+	}
+
+	// Second broker tries to become controller
+	err = broker2.fetchOrElectController()
+	if err != nil {
+		t.Fatalf("Broker2 failed to check controller: %v", err)
+	}
+
+	if broker2.ClusterMetadata.BrokersMetadata.Controller == broker2.port {
+		t.Error("Expected broker2 to NOT become controller when controller already exists")
+	}
+
+	// Verify broker2 knows who the controller is
+	if broker2.ClusterMetadata.BrokersMetadata.Controller != broker1.port {
+		t.Errorf("Expected broker2 to know controller is %d, got %d",
+			broker1.port, broker2.ClusterMetadata.BrokersMetadata.Controller)
+	}
+
+	// Clean up
+	_, _ = etcdClient.Delete(context.Background(), "controller")
+}
+
+// Test controller election with lease expiration
+func TestControllerElection_LeaseExpiration(t *testing.T) {
+	// Connect to etcd
+	etcdClient, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"http://127.0.0.1:2379"},
+		DialTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Skipf("Skipping test: etcd not available: %v", err)
+	}
+	defer etcdClient.Close()
+
+	// Clean up any existing controller key
+	_, _ = etcdClient.Delete(context.Background(), "controller")
+
+	// Create first broker with SHORT lease (2 seconds)
+	broker1 := NewBrokerServer()
+	broker1.etcdClient = etcdClient
+	broker1.ctx, broker1.cancel = context.WithCancel(context.Background())
+
+	leaseResp1, err := etcdClient.Grant(context.Background(), 2) // 2 second lease
+	if err != nil {
+		t.Fatalf("Failed to grant lease for broker1: %v", err)
+	}
+	broker1.leaseID = leaseResp1.ID
+	broker1.port = Port(8080)
+	broker1.ClusterMetadata = ClusterMetadata{
+		TopicsMetadata:  &TopicsMetadata{Topics: make(map[string]*TopicMetadata)},
+		BrokersMetadata: &BrokersMetadata{Brokers: make(map[Port]*BrokerMetadata)},
+	}
+
+	// First broker becomes controller
+	err = broker1.fetchOrElectController()
+	if err != nil {
+		t.Fatalf("Broker1 failed to elect controller: %v", err)
+	}
+
+	if broker1.ClusterMetadata.BrokersMetadata.Controller != broker1.port {
+		t.Fatal("Expected broker1 to become controller")
+	}
+
+	t.Log("Broker1 is controller, stopping broker (simulating crash)...")
+
+	// Simulate broker1 crash by canceling context (stops keepalive)
+	broker1.cancel()
+
+	// Wait for lease to expire (2 seconds + some buffer)
+	t.Log("Waiting for lease to expire (3 seconds)...")
+	time.Sleep(3 * time.Second)
+
+	// Verify controller key is gone
+	resp, err := etcdClient.Get(context.Background(), "controller")
+	if err != nil {
+		t.Fatalf("Failed to get controller key: %v", err)
+	}
+
+	if len(resp.Kvs) > 0 {
+		t.Error("Controller key should have been deleted after lease expiration")
+	}
+
+	// Create second broker
+	t.Log("Starting broker2 after lease expiration...")
+	broker2 := NewBrokerServer()
+	broker2.etcdClient = etcdClient
+	broker2.ctx, broker2.cancel = context.WithCancel(context.Background())
+	defer broker2.cancel()
+
+	leaseResp2, err := etcdClient.Grant(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("Failed to grant lease for broker2: %v", err)
+	}
+	broker2.leaseID = leaseResp2.ID
+	broker2.port = Port(8081)
+	broker2.ClusterMetadata = ClusterMetadata{
+		TopicsMetadata:  &TopicsMetadata{Topics: make(map[string]*TopicMetadata)},
+		BrokersMetadata: &BrokersMetadata{Brokers: make(map[Port]*BrokerMetadata)},
+	}
+
+	// Second broker should become controller
+	err = broker2.fetchOrElectController()
+	if err != nil {
+		t.Fatalf("Broker2 failed to elect controller: %v", err)
+	}
+
+	if broker2.ClusterMetadata.BrokersMetadata.Controller != broker2.port {
+		t.Errorf("Expected controller port to be %d, got %d",
+			broker2.port, broker2.ClusterMetadata.BrokersMetadata.Controller)
+	}
+
+	// Clean up
+	_, _ = etcdClient.Delete(context.Background(), "controller")
+}
+
+// Test multiple brokers racing for controller election
+func TestControllerElection_ConcurrentRace(t *testing.T) {
+	// Connect to etcd
+	etcdClient, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"http://127.0.0.1:2379"},
+		DialTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Skipf("Skipping test: etcd not available: %v", err)
+	}
+	defer etcdClient.Close()
+
+	// Clean up any existing controller key
+	_, _ = etcdClient.Delete(context.Background(), "controller")
+
+	numBrokers := 5
+	brokers := make([]*brokerServer, numBrokers)
+	controllerCount := 0
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	// Create multiple brokers concurrently trying to become controller
+	for i := 0; i < numBrokers; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+
+			broker := NewBrokerServer()
+			broker.etcdClient = etcdClient
+			broker.ctx, broker.cancel = context.WithCancel(context.Background())
+
+			leaseResp, err := etcdClient.Grant(context.Background(), 10)
+			if err != nil {
+				t.Errorf("Failed to grant lease for broker%d: %v", index, err)
+				return
+			}
+			broker.leaseID = leaseResp.ID
+			broker.port = Port(8080 + index)
+			broker.ClusterMetadata = ClusterMetadata{
+				TopicsMetadata:  &TopicsMetadata{Topics: make(map[string]*TopicMetadata)},
+				BrokersMetadata: &BrokersMetadata{Brokers: make(map[Port]*BrokerMetadata)},
+			}
+
+			// Try to become controller
+			err = broker.fetchOrElectController()
+			if err != nil {
+				t.Errorf("Broker%d failed election: %v", index, err)
+				return
+			}
+
+			mu.Lock()
+			brokers[index] = broker
+			if broker.ClusterMetadata.BrokersMetadata.Controller == broker.port {
+				controllerCount++
+				t.Logf("Broker%d (port %d) became controller", index, broker.port)
+			} else {
+				t.Logf("Broker%d (port %d) did NOT become controller", index, broker.port)
+			}
+			mu.Unlock()
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Verify only ONE broker became controller
+	if controllerCount != 1 {
+		t.Errorf("Expected exactly 1 controller, got %d", controllerCount)
+	}
+
+	// Verify all non-controller brokers know who the controller is
+	var controllerPort Port
+	for _, broker := range brokers {
+		if broker == nil {
+			continue
+		}
+		if broker.ClusterMetadata.BrokersMetadata.Controller != 0 {
+			if controllerPort == 0 {
+				controllerPort = broker.ClusterMetadata.BrokersMetadata.Controller
+			} else if controllerPort != broker.ClusterMetadata.BrokersMetadata.Controller {
+				t.Errorf("Brokers disagree on controller: %d vs %d",
+					controllerPort, broker.ClusterMetadata.BrokersMetadata.Controller)
+			}
+		}
+	}
+
+	// Clean up
+	for _, broker := range brokers {
+		if broker != nil && broker.cancel != nil {
+			broker.cancel()
+		}
+	}
+	_, _ = etcdClient.Delete(context.Background(), "controller")
 }
 
 // Helper function to setup broker with etcd for testing
@@ -584,5 +918,25 @@ func TestFetchMetadata(t *testing.T) {
 
 	if len(fetchedMeta.Partitions) != 3 {
 		t.Errorf("Expected 3 partition assignments, got %d", len(fetchedMeta.Partitions))
+	}
+}
+
+// Helper function to clean up controller key before tests
+func cleanupControllerKey(t *testing.T) {
+	etcdClient, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"http://127.0.0.1:2379"},
+		DialTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Logf("Warning: Could not connect to etcd for cleanup: %v", err)
+		return
+	}
+	defer etcdClient.Close()
+
+	_, err = etcdClient.Delete(context.Background(), "controller")
+	if err != nil {
+		t.Logf("Warning: Failed to delete controller key: %v", err)
+	} else {
+		t.Log("Cleaned up controller key from etcd")
 	}
 }

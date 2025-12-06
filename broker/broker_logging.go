@@ -57,7 +57,7 @@ func (b *brokerServer) PrintBroker() {
 			}
 			log.Printf("    Partition %d:", partKey)
 			log.Printf("      Messages: %d", len(partition.Messages))
-			log.Printf("      Index Entries: %d", len(partition.Index))
+			log.Printf("      Index Entries: %d", len(partition.SegmentIndex))
 			log.Printf("      Next Offset: %d", partition.NextOffset)
 
 			// Print first few messages for debugging
@@ -69,7 +69,7 @@ func (b *brokerServer) PrintBroker() {
 						log.Printf("        ... and %d more messages", len(partition.Messages)-maxMsgsToPrint)
 						break
 					}
-					log.Printf("        [%d] %s", i, string(msg))
+					log.Printf("        [%d] %s", i, string(msg.Data))
 				}
 			}
 		}
@@ -159,7 +159,7 @@ func (b *brokerServer) PrintTopic(topicName string) {
 		}
 		log.Printf("  Partition %d:", partition.Key)
 		for i, msg := range partition.Messages {
-			log.Printf("    Message %d: %s", i, string(msg))
+			log.Printf("    Message %d: %s", i, string(msg.Data))
 		}
 	}
 }
