@@ -40,13 +40,14 @@ func (p *Partition) GetSegment(segmentID int) (*Segment, error) {
 	return nil, errors.New("Segment not found")
 }
 
-func (p *Partition) createNewSegment(startOffset int) {
+func (p *Partition) createNewSegment(startOffset int) *Segment {
 	newSegment := &Segment{
 		StartOffset: startOffset,
 		Size:        0,
 	}
 	p.SegmentIndex = append(p.SegmentIndex, newSegment)
 	p.LastPersistedSegment = startOffset
+	return newSegment
 }
 
 func (p *Partition) flushLogs(brokerPort Port, topicName string, partitionKey PartitionKey) error {
@@ -85,12 +86,7 @@ func (p *Partition) flushLogs(brokerPort Port, topicName string, partitionKey Pa
 		if segmentIndexEntry.Size+len(msg.Data) > SegmentSize {
 			log.Println("Segment size limit reached, stopping flush for this segment and creating new segment")
 			segmentFile.Close()
-			p.createNewSegment(msg.Offset)
-			segmentIndexEntry, err = p.GetSegment(msg.Offset)
-			if err != nil {
-				p.partitionMu.RUnlock()
-				return errors.New("Failed to get new segment index: " + err.Error())
-			}
+			segmentIndexEntry = p.createNewSegment(msg.Offset)
 			segmentFile, err = OpenSegmentFile(brokerPort, topicName, partitionKey, msg.Offset, debugMode)
 
 			if err != nil {

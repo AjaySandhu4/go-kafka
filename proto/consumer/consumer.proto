@@ -1,0 +1,28 @@
+syntax = "proto3";
+// import "google/protobuf/empty.proto";
+
+option go_package = "go-kafka/proto/consumer";
+package consumer;
+
+
+service ConsumerService {
+  rpc consumeMessages(MessageRequest) returns (MessageResponse);
+  // rpc GetConsumerMetadata(google.protobuf.Empty) returns (ConsumerMetadata);
+}
+
+message MessageRequest {
+  string topic = 1;
+  int32 partitionKey = 2;
+  int64 offset = 3;
+  int32 maxMessages = 4;
+  int32 maxBytes = 5;
+}
+
+message MessageResponse {
+  repeated Message messages = 1;
+}
+
+message Message {
+  int64 offset = 1;
+  bytes value = 2;
+}

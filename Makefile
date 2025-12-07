@@ -3,9 +3,9 @@ proto_gen:
 		--go-grpc_out=./ --go-grpc_opt=paths=source_relative \
 		./proto/producer/producer.proto
 
-	# protoc --go_out=./proto/consumer --go_opt=paths=source_relative \
-	# 	--go-grpc_out=./proto/consumer --go-grpc_opt=paths=source_relative \
-	# 	./proto/consumer/consumer.proto
+	protoc --go_out=./proto/consumer --go_opt=paths=source_relative \
+		--go-grpc_out=./proto/consumer --go-grpc_opt=paths=source_relative \
+		./proto/consumer/consumer.proto
 
 run_cluster:
 	goreman -f etcd/Procfile start
@@ -30,4 +30,7 @@ test_broker:
 test_producer:
 	go test -count=5 ./producer
 
-run_tests: test_broker test_producer
+test_consumer:
+	go test -count=5 ./consumer
+
+run_tests: test_broker test_producer test_consumer
