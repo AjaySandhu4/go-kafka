@@ -4,7 +4,7 @@ package producer
 
 import (
 	"context"
-	"go-kafka/broker"
+	"go-kafka/cluster"
 	producerpb "go-kafka/proto/producer"
 	"net"
 	"strconv"
@@ -399,13 +399,13 @@ func TestPublishMessage_Multiple(t *testing.T) {
 // Test getRandomPartition
 func TestGetRandomPartition(t *testing.T) {
 	producer := &Producer{
-		clusterMetadata: &broker.ClusterMetadata{
-			TopicsMetadata: &broker.TopicsMetadata{
-				Topics: map[string]*broker.TopicMetadata{
+		clusterMetadata: &cluster.ClusterMetadata{
+			TopicsMetadata: &cluster.TopicsMetadata{
+				Topics: map[string]*cluster.TopicMetadata{
 					"test-topic": {
 						Topic:         "test-topic",
 						NumPartitions: 3,
-						Partitions: map[broker.PartitionKey]broker.Port{
+						Partitions: map[cluster.PartitionKey]cluster.Port{
 							0: 8080,
 							1: 8081,
 							2: 8082,
@@ -447,9 +447,9 @@ func TestGetRandomPartition_NoMetadata(t *testing.T) {
 // Test getRandomPartition with non-existent topic
 func TestGetRandomPartition_TopicNotFound(t *testing.T) {
 	producer := &Producer{
-		clusterMetadata: &broker.ClusterMetadata{
-			TopicsMetadata: &broker.TopicsMetadata{
-				Topics: map[string]*broker.TopicMetadata{},
+		clusterMetadata: &cluster.ClusterMetadata{
+			TopicsMetadata: &cluster.TopicsMetadata{
+				Topics: map[string]*cluster.TopicMetadata{},
 			},
 		},
 	}
@@ -469,13 +469,13 @@ func TestGetRandomPartition_TopicNotFound(t *testing.T) {
 // Test getRandomPartition with no partitions
 func TestGetRandomPartition_NoPartitions(t *testing.T) {
 	producer := &Producer{
-		clusterMetadata: &broker.ClusterMetadata{
-			TopicsMetadata: &broker.TopicsMetadata{
-				Topics: map[string]*broker.TopicMetadata{
+		clusterMetadata: &cluster.ClusterMetadata{
+			TopicsMetadata: &cluster.TopicsMetadata{
+				Topics: map[string]*cluster.TopicMetadata{
 					"empty-topic": {
 						Topic:         "empty-topic",
 						NumPartitions: 0,
-						Partitions:    map[broker.PartitionKey]broker.Port{},
+						Partitions:    map[cluster.PartitionKey]cluster.Port{},
 					},
 				},
 			},
@@ -502,10 +502,10 @@ func TestPopulateClientConnections(t *testing.T) {
 	defer cleanup2()
 
 	producer := &Producer{
-		clientConn: make(map[broker.Port]*ClientConn),
-		clusterMetadata: &broker.ClusterMetadata{
-			BrokersMetadata: &broker.BrokersMetadata{
-				Brokers: map[broker.Port]*broker.BrokerMetadata{
+		clientConn: make(map[cluster.Port]*ClientConn),
+		clusterMetadata: &cluster.ClusterMetadata{
+			BrokersMetadata: &cluster.BrokersMetadata{
+				Brokers: map[cluster.Port]*cluster.BrokerMetadata{
 					8080: {Port: 8080},
 					8081: {Port: 8081},
 				},

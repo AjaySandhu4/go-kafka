@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"go-kafka/broker"
+	"go-kafka/cluster"
 	producerpb "go-kafka/proto/producer"
 
 	"google.golang.org/grpc"
@@ -21,16 +21,16 @@ var bootstrapServerPort = 8080
 var rpcRetries = 3
 
 type Producer struct {
-	clientConn      map[broker.Port]*ClientConn
-	clusterMetadata *broker.ClusterMetadata
+	clientConn      map[cluster.Port]*ClientConn
+	clusterMetadata *cluster.ClusterMetadata
 	ctx             context.Context
 	cancel          context.CancelFunc
 	metadataMu      sync.RWMutex
 }
 
 type ProducerClusterMetadata struct {
-	TopicsMetadata  broker.TopicsMetadata
-	BrokersMetadata broker.BrokersMetadata
+	TopicsMetadata  cluster.TopicsMetadata
+	BrokersMetadata cluster.BrokersMetadata
 }
 
 type ClientConn struct {
@@ -40,14 +40,14 @@ type ClientConn struct {
 
 func (p *Producer) StartProducer() {
 	log.Println("Starting Producer...")
-	p.clientConn = make(map[broker.Port]*ClientConn)
+	p.clientConn = make(map[cluster.Port]*ClientConn)
 
 	// Connect to bootstrap broker
 	conn, err := grpc.NewClient("localhost:"+strconv.Itoa(bootstrapServerPort), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatalf("Failed to connect to bootstrap broker: %v", err)
 	}
-	p.clientConn[broker.Port(bootstrapServerPort)] = &ClientConn{
+	p.clientConn[cluster.Port(bootstrapServerPort)] = &ClientConn{
 		conn:   conn,
 		client: producerpb.NewProducerServiceClient(conn),
 	}
@@ -175,7 +175,7 @@ func (p *Producer) CreateTopic(topic string, numPartitions int) (string, error) 
 func (p *Producer) populateMetadata(useBootstrapServer bool) error {
 	p.metadataMu.Lock()
 	defer p.metadataMu.Unlock()
-	brokerPort := broker.Port(bootstrapServerPort)
+	brokerPort := cluster.Port(bootstrapServerPort)
 	if !useBootstrapServer && p.clusterMetadata != nil && p.clusterMetadata.BrokersMetadata.Controller != 0 {
 		brokerPort = p.clusterMetadata.BrokersMetadata.Controller
 	}
@@ -187,32 +187,32 @@ func (p *Producer) populateMetadata(useBootstrapServer bool) error {
 		log.Printf("Failed to get metadata: %v", err)
 		return err
 	}
-	meta := broker.ClusterMetadata{
-		TopicsMetadata:  &broker.TopicsMetadata{Topics: make(map[string]*broker.TopicMetadata)},
-		BrokersMetadata: &broker.BrokersMetadata{Brokers: make(map[broker.Port]*broker.BrokerMetadata)},
+	meta := cluster.ClusterMetadata{
+		TopicsMetadata:  &cluster.TopicsMetadata{Topics: make(map[string]*cluster.TopicMetadata)},
+		BrokersMetadata: &cluster.BrokersMetadata{Brokers: make(map[cluster.Port]*cluster.BrokerMetadata)},
 	}
 	for _, t := range res.Topics {
-		topicMeta := broker.TopicMetadata{
+		topicMeta := cluster.TopicMetadata{
 			Topic:         t.Topic,
 			NumPartitions: int(t.NumPartitions),
-			Partitions:    make(map[broker.PartitionKey]broker.Port),
+			Partitions:    make(map[cluster.PartitionKey]cluster.Port),
 		}
 		for partition, port := range t.Partitions {
-			topicMeta.Partitions[broker.PartitionKey(partition)] = broker.Port(port)
+			topicMeta.Partitions[cluster.PartitionKey(partition)] = cluster.Port(port)
 		}
 		meta.TopicsMetadata.Topics[t.Topic] = &topicMeta
 	}
 	for _, b := range res.Brokers {
-		meta.BrokersMetadata.Brokers[broker.Port(b.Port)] = &broker.BrokerMetadata{Port: broker.Port(b.Port)}
+		meta.BrokersMetadata.Brokers[cluster.Port(b.Port)] = &cluster.BrokerMetadata{Port: cluster.Port(b.Port)}
 	}
-	meta.BrokersMetadata.Controller = broker.Port(res.ControllerPort)
+	meta.BrokersMetadata.Controller = cluster.Port(res.ControllerPort)
 
 	p.clusterMetadata = &meta
 	log.Printf("Got metadata from broker")
 	return nil
 }
 
-func (p *Producer) getRandomPartition(topic string) (broker.PartitionKey, error) {
+func (p *Producer) getRandomPartition(topic string) (cluster.PartitionKey, error) {
 	p.metadataMu.RLock()
 	defer p.metadataMu.RUnlock()
 	if p.clusterMetadata == nil {
@@ -223,7 +223,7 @@ func (p *Producer) getRandomPartition(topic string) (broker.PartitionKey, error)
 		return -1, errors.New("topic does not exist in metadata")
 	}
 	// Simple random partition selection
-	var partitionKeys []broker.PartitionKey
+	var partitionKeys []cluster.PartitionKey
 	for pk := range topicMeta.Partitions {
 		partitionKeys = append(partitionKeys, pk)
 	}

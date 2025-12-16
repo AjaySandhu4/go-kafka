@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"hash/crc32"
 	"log"
 	"math/rand"
 	"strconv"
 	"sync"
 
+	"go-kafka/cluster"
 	producerpb "go-kafka/proto/producer"
 
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -24,7 +26,7 @@ func (b *brokerServer) PublishMessage(ctx context.Context, req *producerpb.Publi
 	defer b.topicsMu.RUnlock()
 
 	b.metadataMu.RLock()
-	partitionKey := PartitionKey(req.PartitionKey)
+	partitionKey := cluster.PartitionKey(req.PartitionKey)
 	if b.ClusterMetadata.TopicsMetadata.Topics[req.Topic].Partitions[partitionKey] != b.port {
 		log.Printf("Partition %d is not assigned to this broker", partitionKey)
 		return &producerpb.PublishResponse{Success: false}, nil
@@ -52,12 +54,19 @@ func (b *brokerServer) PublishMessage(ctx context.Context, req *producerpb.Publi
 	defer partition.partitionMu.Unlock()
 	// Append message
 	messageBytes := []byte(req.Message)
-	partition.Messages = append(partition.Messages, Message{
-		Offset: partition.NextOffset,
-		Data:   messageBytes,
-	})
+	newMessage := Message{
+		Header: MessageHeader{
+			Offset:   partition.NextOffset,
+			DataSize: uint32(len(messageBytes)),
+			Size:     uint32(MessageHeaderSize + len(messageBytes)),
+			CRC:      crc32.ChecksumIEEE(messageBytes),
+		},
+		Data: messageBytes,
+	}
+
+	partition.Messages = append(partition.Messages, newMessage)
 	log.Printf("Message published to topic %s partition %d at offset %d", req.Topic, partitionKey, partition.NextOffset)
-	partition.NextOffset += len(messageBytes)
+	partition.NextOffset += int64(newMessage.Header.Size)
 
 	return &producerpb.PublishResponse{Success: true}, nil
 }
@@ -78,7 +87,7 @@ func (b *brokerServer) CreateTopic(ctx context.Context, req *producerpb.CreateTo
 	newTopic := &TopicData{
 		Name:          req.Topic,
 		NumPartitions: int(req.NumPartitions),
-		Partitions:    make(map[PartitionKey]*Partition),
+		Partitions:    make(map[cluster.PartitionKey]*Partition),
 		topicMu:       sync.RWMutex{},
 	}
 
@@ -88,20 +97,20 @@ func (b *brokerServer) CreateTopic(ctx context.Context, req *producerpb.CreateTo
 	}
 
 	// Assign partitions to brokers
-	brokers := make([]Port, 0, len(b.ClusterMetadata.BrokersMetadata.Brokers))
+	brokers := make([]cluster.Port, 0, len(b.ClusterMetadata.BrokersMetadata.Brokers))
 	for addr := range b.ClusterMetadata.BrokersMetadata.Brokers {
 		brokers = append(brokers, addr)
 	}
-	partitionAssignments := make(map[PartitionKey]Port)
+	partitionAssignments := make(map[cluster.PartitionKey]cluster.Port)
 	for i := range req.NumPartitions {
 		if len(brokers) == 0 {
 			log.Panic("Broker list is empty, cannot assign partitions")
 		}
 		brokerIndex := rand.Intn(len(brokers))
-		partitionAssignments[PartitionKey(i)] = brokers[brokerIndex]
+		partitionAssignments[cluster.PartitionKey(i)] = brokers[brokerIndex]
 	}
 
-	topicMeta := TopicMetadata{
+	topicMeta := cluster.TopicMetadata{
 		Topic:         req.Topic,
 		NumPartitions: int(req.NumPartitions),
 		Partitions:    partitionAssignments,

@@ -4,6 +4,7 @@ package broker
 
 import (
 	"context"
+	"go-kafka/cluster"
 	producerpb "go-kafka/proto/producer"
 	"os"
 	"strconv"
@@ -167,7 +168,7 @@ func TestPublishMessage_Success(t *testing.T) {
 	}
 
 	// Get partition assignment for this broker
-	var assignedPartition PartitionKey
+	var assignedPartition cluster.PartitionKey
 	found := false
 	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
 		if port == broker.port {
@@ -231,7 +232,7 @@ func TestPublishMessage_WrongPartition(t *testing.T) {
 	}
 
 	// Try to publish to a partition not owned by this broker
-	var wrongPartition PartitionKey
+	var wrongPartition cluster.PartitionKey
 	found := false
 	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
 		if port != broker.port {
@@ -280,7 +281,7 @@ func TestPublishMessage_MultipleMessages(t *testing.T) {
 	}
 
 	// Find partition assigned to this broker
-	var assignedPartition PartitionKey
+	var assignedPartition cluster.PartitionKey
 	found := false
 	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
 		if port == broker.port {
@@ -385,7 +386,7 @@ func TestPartitionIndex(t *testing.T) {
 	}
 
 	// Find partition assigned to this broker
-	var assignedPartition PartitionKey
+	var assignedPartition cluster.PartitionKey
 	found := false
 	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
 		if port == broker.port {
@@ -401,8 +402,8 @@ func TestPartitionIndex(t *testing.T) {
 
 	// Publish messages of different sizes
 	messages := []string{"short", "medium message", "this is a longer message"}
-	expectedOffsets := []int{}
-	currentOffset := 0
+	expectedOffsets := []int64{}
+	currentOffset := int64(0)
 
 	for _, msg := range messages {
 		publishReq := &producerpb.PublishRequest{
@@ -412,7 +413,7 @@ func TestPartitionIndex(t *testing.T) {
 		}
 
 		expectedOffsets = append(expectedOffsets, currentOffset)
-		currentOffset += len(msg)
+		currentOffset += int64(MessageHeaderSize) + int64(len(msg))
 
 		_, err := broker.PublishMessage(context.Background(), publishReq)
 		if err != nil {
@@ -438,9 +439,9 @@ func TestPartitionIndex(t *testing.T) {
 	}
 
 	// Verify the segment contains all messages
-	expectedTotalSize := 0
+	expectedTotalSize := int64(0)
 	for _, msg := range messages {
-		expectedTotalSize += len(msg)
+		expectedTotalSize += int64(MessageHeaderSize) + int64(len(msg))
 	}
 	if partition.SegmentIndex[0].Size != expectedTotalSize {
 		t.Errorf("Expected segment size %d, got %d", expectedTotalSize, partition.SegmentIndex[0].Size)
@@ -473,7 +474,7 @@ func TestPublishMessage_Concurrent(t *testing.T) {
 	}
 
 	// Find partition assigned to this broker
-	var assignedPartition PartitionKey
+	var assignedPartition cluster.PartitionKey
 	found := false
 	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
 		if port == broker.port {
@@ -549,11 +550,11 @@ func TestControllerElection_SingleBroker(t *testing.T) {
 		t.Fatalf("Failed to grant lease: %v", err)
 	}
 	broker.leaseID = leaseResp.ID
-	broker.port = Port(8080)
+	broker.port = cluster.Port(8080)
 
-	broker.ClusterMetadata = ClusterMetadata{
-		TopicsMetadata:  &TopicsMetadata{Topics: make(map[string]*TopicMetadata)},
-		BrokersMetadata: &BrokersMetadata{Brokers: make(map[Port]*BrokerMetadata)},
+	broker.ClusterMetadata = cluster.ClusterMetadata{
+		TopicsMetadata:  &cluster.TopicsMetadata{Topics: make(map[string]*cluster.TopicMetadata)},
+		BrokersMetadata: &cluster.BrokersMetadata{Brokers: make(map[cluster.Port]*cluster.BrokerMetadata)},
 	}
 
 	// Try to elect controller
@@ -581,7 +582,7 @@ func TestControllerElection_SingleBroker(t *testing.T) {
 		t.Fatalf("Failed to parse controller port: %v", err)
 	}
 
-	if Port(controllerPort) != broker.port {
+	if cluster.Port(controllerPort) != broker.port {
 		t.Errorf("Expected controller port in etcd to be %d, got %d", broker.port, controllerPort)
 	}
 
@@ -615,10 +616,10 @@ func TestControllerElection_SecondBrokerFails(t *testing.T) {
 		t.Fatalf("Failed to grant lease for broker1: %v", err)
 	}
 	broker1.leaseID = leaseResp1.ID
-	broker1.port = Port(8080)
-	broker1.ClusterMetadata = ClusterMetadata{
-		TopicsMetadata:  &TopicsMetadata{Topics: make(map[string]*TopicMetadata)},
-		BrokersMetadata: &BrokersMetadata{Brokers: make(map[Port]*BrokerMetadata)},
+	broker1.port = cluster.Port(8080)
+	broker1.ClusterMetadata = cluster.ClusterMetadata{
+		TopicsMetadata:  &cluster.TopicsMetadata{Topics: make(map[string]*cluster.TopicMetadata)},
+		BrokersMetadata: &cluster.BrokersMetadata{Brokers: make(map[cluster.Port]*cluster.BrokerMetadata)},
 	}
 
 	// First broker becomes controller
@@ -638,10 +639,10 @@ func TestControllerElection_SecondBrokerFails(t *testing.T) {
 		t.Fatalf("Failed to grant lease for broker2: %v", err)
 	}
 	broker2.leaseID = leaseResp2.ID
-	broker2.port = Port(8081)
-	broker2.ClusterMetadata = ClusterMetadata{
-		TopicsMetadata:  &TopicsMetadata{Topics: make(map[string]*TopicMetadata)},
-		BrokersMetadata: &BrokersMetadata{Brokers: make(map[Port]*BrokerMetadata)},
+	broker2.port = cluster.Port(8081)
+	broker2.ClusterMetadata = cluster.ClusterMetadata{
+		TopicsMetadata:  &cluster.TopicsMetadata{Topics: make(map[string]*cluster.TopicMetadata)},
+		BrokersMetadata: &cluster.BrokersMetadata{Brokers: make(map[cluster.Port]*cluster.BrokerMetadata)},
 	}
 
 	// Second broker tries to become controller
@@ -689,10 +690,10 @@ func TestControllerElection_LeaseExpiration(t *testing.T) {
 		t.Fatalf("Failed to grant lease for broker1: %v", err)
 	}
 	broker1.leaseID = leaseResp1.ID
-	broker1.port = Port(8080)
-	broker1.ClusterMetadata = ClusterMetadata{
-		TopicsMetadata:  &TopicsMetadata{Topics: make(map[string]*TopicMetadata)},
-		BrokersMetadata: &BrokersMetadata{Brokers: make(map[Port]*BrokerMetadata)},
+	broker1.port = cluster.Port(8080)
+	broker1.ClusterMetadata = cluster.ClusterMetadata{
+		TopicsMetadata:  &cluster.TopicsMetadata{Topics: make(map[string]*cluster.TopicMetadata)},
+		BrokersMetadata: &cluster.BrokersMetadata{Brokers: make(map[cluster.Port]*cluster.BrokerMetadata)},
 	}
 
 	// First broker becomes controller
@@ -736,10 +737,10 @@ func TestControllerElection_LeaseExpiration(t *testing.T) {
 		t.Fatalf("Failed to grant lease for broker2: %v", err)
 	}
 	broker2.leaseID = leaseResp2.ID
-	broker2.port = Port(8081)
-	broker2.ClusterMetadata = ClusterMetadata{
-		TopicsMetadata:  &TopicsMetadata{Topics: make(map[string]*TopicMetadata)},
-		BrokersMetadata: &BrokersMetadata{Brokers: make(map[Port]*BrokerMetadata)},
+	broker2.port = cluster.Port(8081)
+	broker2.ClusterMetadata = cluster.ClusterMetadata{
+		TopicsMetadata:  &cluster.TopicsMetadata{Topics: make(map[string]*cluster.TopicMetadata)},
+		BrokersMetadata: &cluster.BrokersMetadata{Brokers: make(map[cluster.Port]*cluster.BrokerMetadata)},
 	}
 
 	// Second broker should become controller
@@ -794,10 +795,10 @@ func TestControllerElection_ConcurrentRace(t *testing.T) {
 				return
 			}
 			broker.leaseID = leaseResp.ID
-			broker.port = Port(8080 + index)
-			broker.ClusterMetadata = ClusterMetadata{
-				TopicsMetadata:  &TopicsMetadata{Topics: make(map[string]*TopicMetadata)},
-				BrokersMetadata: &BrokersMetadata{Brokers: make(map[Port]*BrokerMetadata)},
+			broker.port = cluster.Port(8080 + index)
+			broker.ClusterMetadata = cluster.ClusterMetadata{
+				TopicsMetadata:  &cluster.TopicsMetadata{Topics: make(map[string]*cluster.TopicMetadata)},
+				BrokersMetadata: &cluster.BrokersMetadata{Brokers: make(map[cluster.Port]*cluster.BrokerMetadata)},
 			}
 
 			// Try to become controller
@@ -827,7 +828,7 @@ func TestControllerElection_ConcurrentRace(t *testing.T) {
 	}
 
 	// Verify all non-controller brokers know who the controller is
-	var controllerPort Port
+	var controllerPort cluster.Port
 	for _, broker := range brokers {
 		if broker == nil {
 			continue
@@ -869,7 +870,7 @@ func TestFlushLogs_SinglePartition(t *testing.T) {
 	}
 
 	// Find partition assigned to this broker
-	var assignedPartition PartitionKey
+	var assignedPartition cluster.PartitionKey
 	found := false
 	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
 		if port == broker.port {
@@ -938,7 +939,7 @@ func TestFlushLogs_MultiplePartitions(t *testing.T) {
 	}
 
 	// Publish messages to all partitions assigned to this broker
-	assignedPartitions := []PartitionKey{}
+	assignedPartitions := []cluster.PartitionKey{}
 	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
 		if port == broker.port {
 			assignedPartitions = append(assignedPartitions, partKey)
@@ -995,7 +996,7 @@ func TestFlushLogs_SegmentRotation(t *testing.T) {
 	}
 
 	// Find partition assigned to this broker
-	var assignedPartition PartitionKey
+	var assignedPartition cluster.PartitionKey
 	found := false
 	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
 		if port == broker.port {
@@ -1077,7 +1078,7 @@ func TestFlushLogs_EmptyPartition(t *testing.T) {
 	}
 
 	// Find partition assigned to this broker
-	var assignedPartition PartitionKey
+	var assignedPartition cluster.PartitionKey
 	found := false
 	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
 		if port == broker.port {
@@ -1132,7 +1133,7 @@ func TestFlushLogs_Idempotent(t *testing.T) {
 	}
 
 	// Find partition assigned to this broker
-	var assignedPartition PartitionKey
+	var assignedPartition cluster.PartitionKey
 	found := false
 	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
 		if port == broker.port {
@@ -1207,7 +1208,7 @@ func TestFlushLogs_Concurrent(t *testing.T) {
 	}
 
 	// Find partition assigned to this broker
-	var assignedPartition PartitionKey
+	var assignedPartition cluster.PartitionKey
 	found := false
 	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
 		if port == broker.port {
@@ -1293,7 +1294,7 @@ func TestFlushTicker(t *testing.T) {
 	}
 
 	// Find partition assigned to this broker
-	var assignedPartition PartitionKey
+	var assignedPartition cluster.PartitionKey
 	found := false
 	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
 		if port == broker.port {
@@ -1431,7 +1432,7 @@ func TestFlushLogs_VerifyRawLogContent(t *testing.T) {
 	}
 
 	// Find partition assigned to this broker
-	var assignedPartition PartitionKey
+	var assignedPartition cluster.PartitionKey
 	found := false
 	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
 		if port == broker.port {
@@ -1474,22 +1475,32 @@ func TestFlushLogs_VerifyRawLogContent(t *testing.T) {
 		t.Fatalf("Failed to read raw log file: %v", err)
 	}
 
-	// Verify raw data contains all messages concatenated
-	rawString := string(rawData)
-	for _, expectedMsg := range expectedMessages {
-		if !contains(rawString, expectedMsg) {
-			t.Errorf("Raw log does not contain expected message: %s", expectedMsg)
-		}
-	}
-
-	// Verify total size matches expected
-	expectedSize := 0
+	// Verify total size matches expected (headers + data)
+	expectedSize := int64(len(expectedMessages) * MessageHeaderSize)
 	for _, msg := range expectedMessages {
-		expectedSize += len(msg)
+		expectedSize += int64(len(msg))
 	}
 
-	if len(rawData) != expectedSize {
-		t.Errorf("Expected raw log size %d bytes, got %d bytes", expectedSize, len(rawData))
+	if int64(len(rawData)) != expectedSize {
+		t.Errorf("Expected raw log size %d bytes (with headers), got %d bytes", expectedSize, len(rawData))
+	}
+
+	// Read and verify messages from raw log using headers
+	rawLogFile, err := os.OpenFile(logPath, os.O_RDONLY, 0644)
+	if err != nil {
+		t.Fatalf("Failed to open raw log file for reading: %v", err)
+	}
+	defer rawLogFile.Close()
+
+	sf := &SegmentFile{raw: rawLogFile}
+	for i, expectedMsg := range expectedMessages {
+		msg, err := sf.Read()
+		if err != nil {
+			t.Fatalf("Failed to read message %d from raw log: %v", i, err)
+		}
+		if string(msg.Data) != expectedMsg {
+			t.Errorf("Message %d content mismatch. Expected '%s', got '%s'", i, expectedMsg, string(msg.Data))
+		}
 	}
 
 	t.Logf("Raw log file verified: %d bytes containing %d messages", len(rawData), len(expectedMessages))
@@ -1516,7 +1527,7 @@ func TestFlushLogs_VerifyOffsets(t *testing.T) {
 	}
 
 	// Find partition assigned to this broker
-	var assignedPartition PartitionKey
+	var assignedPartition cluster.PartitionKey
 	found := false
 	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
 		if port == broker.port {
@@ -1533,13 +1544,13 @@ func TestFlushLogs_VerifyOffsets(t *testing.T) {
 	// Publish messages of different sizes to test offset calculation
 	messages := []struct {
 		content        string
-		expectedOffset int
+		expectedOffset int64
 	}{
-		{"A", 0},           // Offset 0, size 1
-		{"BC", 1},          // Offset 1, size 2
-		{"DEF", 3},         // Offset 3, size 3
-		{"GHIJ", 6},        // Offset 6, size 4
-		{"KLMNOPQRST", 10}, // Offset 10, size 10
+		{"A", 0},                             // Offset 0, header(20) + size 1 = 21
+		{"BC", int64(MessageHeaderSize + 1)}, // Offset 21, header(20) + size 2 = 42
+		{"DEF", int64(2*MessageHeaderSize + 1 + 2)},                // Offset 43, header(20) + size 3 = 63
+		{"GHIJ", int64(3*MessageHeaderSize + 1 + 2 + 3)},           // Offset 66, header(20) + size 4 = 86
+		{"KLMNOPQRST", int64(4*MessageHeaderSize + 1 + 2 + 3 + 4)}, // Offset 90, header(20) + size 10 = 100
 	}
 
 	for _, msg := range messages {
@@ -1558,8 +1569,8 @@ func TestFlushLogs_VerifyOffsets(t *testing.T) {
 	// Verify in-memory offsets before flush
 	partition := broker.Topics[topicName].Partitions[assignedPartition]
 	for i, msg := range messages {
-		if partition.Messages[i].Offset != msg.expectedOffset {
-			t.Errorf("Message %d: expected offset %d, got %d", i, msg.expectedOffset, partition.Messages[i].Offset)
+		if partition.Messages[i].Header.Offset != msg.expectedOffset {
+			t.Errorf("Message %d: expected offset %d, got %d", i, msg.expectedOffset, partition.Messages[i].Header.Offset)
 		}
 		if string(partition.Messages[i].Data) != msg.content {
 			t.Errorf("Message %d: expected content %s, got %s", i, msg.content, string(partition.Messages[i].Data))
@@ -1586,27 +1597,54 @@ func TestFlushLogs_VerifyOffsets(t *testing.T) {
 	if partition.SegmentIndex[0].StartOffset != 0 {
 		t.Errorf("Expected segment start offset 0, got %d", partition.SegmentIndex[0].StartOffset)
 	}
-
-	// Read raw log file and verify we can extract messages at correct offsets
+	// Read raw log file and verify it contains all messages with headers
+	// Note: The raw file now stores: [header][data][header][data]...
 	logPath := "broker/broker_logs/logs/broker_" + strconv.Itoa(int(broker.port)) + "/topic_" + topicName + "/partition_" + strconv.Itoa(int(assignedPartition)) + "/segment_0.log"
 	rawData, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatalf("Failed to read raw log file: %v", err)
 	}
 
-	// Verify we can extract each message using the offsets from segment index
-	for i, msg := range messages {
-		startOffset := msg.expectedOffset
-		endOffset := startOffset + len(msg.content)
+	// Calculate expected file size: sum of (header + data) for each message
+	expectedFileSize := 0
+	for _, msg := range messages {
+		expectedFileSize += MessageHeaderSize + len(msg.content)
+	}
 
-		if endOffset > len(rawData) {
-			t.Fatalf("Message %d: end offset %d exceeds raw data length %d", i, endOffset, len(rawData))
+	if len(rawData) != expectedFileSize {
+		t.Errorf("Raw file size mismatch. Expected %d bytes, got %d", expectedFileSize, len(rawData))
+	}
+
+	// Verify we can extract each message using the segment file reader
+	// Open file in read-only mode for reading
+	rawLogFile, err := os.OpenFile(logPath, os.O_RDONLY, 0644)
+	if err != nil {
+		t.Fatalf("Failed to open segment file for reading: %v", err)
+	}
+	defer rawLogFile.Close()
+
+	segmentFile := &SegmentFile{raw: rawLogFile}
+
+	// Read back each message and verify
+	for i, expectedMsg := range messages {
+		msg, err := segmentFile.Read()
+		if err != nil {
+			t.Fatalf("Failed to read message %d: %v", i, err)
 		}
 
-		extractedMsg := string(rawData[startOffset:endOffset])
-		if extractedMsg != msg.content {
-			t.Errorf("Message %d at offset %d: expected %s, got %s",
-				i, startOffset, msg.content, extractedMsg)
+		// Verify logical offset
+		if msg.Header.Offset != expectedMsg.expectedOffset {
+			t.Errorf("Message %d: expected offset %d, got %d", i, expectedMsg.expectedOffset, msg.Header.Offset)
+		}
+
+		// Verify data content
+		if string(msg.Data) != expectedMsg.content {
+			t.Errorf("Message %d: expected content '%s', got '%s'", i, expectedMsg.content, string(msg.Data))
+		}
+
+		// Verify data size
+		if msg.Header.DataSize != uint32(len(expectedMsg.content)) {
+			t.Errorf("Message %d: expected data size %d, got %d", i, len(expectedMsg.content), msg.Header.DataSize)
 		}
 	}
 
@@ -1637,7 +1675,7 @@ func TestFlushLogs_SegmentRotationOffsetContinuity(t *testing.T) {
 	}
 
 	// Find partition assigned to this broker
-	var assignedPartition PartitionKey
+	var assignedPartition cluster.PartitionKey
 	found := false
 	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
 		if port == broker.port {
@@ -1657,12 +1695,12 @@ func TestFlushLogs_SegmentRotationOffsetContinuity(t *testing.T) {
 	numMessages := 4                           // 14KB total, should create 2 segments
 
 	// With 3.5KB messages and 10KB segment size:
-	// - Messages 0,1 fit in segment 0 (7KB total)
+	// - Messages 0,1 fit in segment 0 (7KB total + 2*20 bytes header)
 	// - Message 2 would exceed 10KB, so rotation happens
-	// - Messages 2,3 go to segment 7000 (7KB total)
-	expectedSegmentOffsets := []int{0, 7000} // Two segments
+	// - Messages 2,3 go to next segment
+	expectedSegmentOffsets := []int64{0, int64(2*MessageHeaderSize + 2*len(largeMessage))} // Two segments
 
-	currentOffset := 0
+	currentOffset := int64(0)
 	for i := 0; i < numMessages; i++ {
 		publishReq := &producerpb.PublishRequest{
 			Topic:        topicName,
@@ -1675,7 +1713,7 @@ func TestFlushLogs_SegmentRotationOffsetContinuity(t *testing.T) {
 			t.Fatalf("Failed to publish message %d: %v", i, err)
 		}
 
-		currentOffset += len(largeMessage)
+		currentOffset += int64(MessageHeaderSize) + int64(len(largeMessage))
 	}
 
 	// Flush logs
@@ -1755,7 +1793,7 @@ func TestFlushLogs_ReadRawLogFile(t *testing.T) {
 	}
 
 	// Find partition assigned to this broker
-	var assignedPartition PartitionKey
+	var assignedPartition cluster.PartitionKey
 	found := false
 	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
 		if port == broker.port {
@@ -1799,17 +1837,18 @@ func TestFlushLogs_ReadRawLogFile(t *testing.T) {
 		t.Fatalf("Failed to read log file: %v", err)
 	}
 
-	// Verify the content
-	expectedContent := "HelloWorldKafka"
-	if string(logData) != expectedContent {
-		t.Errorf("Expected log content '%s', got '%s'", expectedContent, string(logData))
+	// Verify the size (3 messages with headers: 20 bytes header + data for each)
+	expectedSize := int64(3*MessageHeaderSize + len("Hello") + len("World") + len("Kafka"))
+	if int64(len(logData)) != expectedSize {
+		t.Errorf("Expected log size %d bytes (3 headers + data), got %d", expectedSize, len(logData))
 	}
 
-	// Verify the size
-	expectedSize := len(expectedContent)
-	if len(logData) != expectedSize {
-		t.Errorf("Expected log size %d, got %d", expectedSize, len(logData))
+	// Verify we can read messages back using the segment file
+	segmentFile, err := OpenSegmentFile(broker.port, topicName, assignedPartition, 0, false, true)
+	if err != nil {
+		t.Fatalf("Failed to open segment file for reading: %v", err)
 	}
+	defer segmentFile.Close()
 
 	// Verify segment index has correct offsets and sizes
 	if len(partition.SegmentIndex) != 1 {
@@ -1824,7 +1863,7 @@ func TestFlushLogs_ReadRawLogFile(t *testing.T) {
 		t.Errorf("Expected segment size %d, got %d", expectedSize, partition.SegmentIndex[0].Size)
 	}
 
-	t.Logf("Successfully verified raw log file contains: %s", expectedContent)
+	t.Logf("Successfully verified raw log file: %d bytes with headers", len(logData))
 
 	// Clean up
 	os.RemoveAll("broker/broker_logs")
@@ -1851,7 +1890,7 @@ func TestFlushLogs_ReadRawLogFileMultipleSegments(t *testing.T) {
 	}
 
 	// Find partition assigned to this broker
-	var assignedPartition PartitionKey
+	var assignedPartition cluster.PartitionKey
 	found := false
 	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
 		if port == broker.port {
@@ -1900,27 +1939,85 @@ func TestFlushLogs_ReadRawLogFileMultipleSegments(t *testing.T) {
 		t.Fatalf("Failed to read segment 0: %v", err)
 	}
 
-	// Segment 0 should contain first 2 messages (total 7002 bytes, before rotation at 10KB)
-	expectedSegment0Content := largeMessage + "0" + largeMessage + "1"
-	if string(segment0Data) != expectedSegment0Content {
-		t.Errorf("Segment 0 content mismatch. Expected length %d, got %d", len(expectedSegment0Content), len(segment0Data))
+	// Segment 0 should contain first 2 messages with headers
+	// Each message: 20 bytes header + 3501 bytes data = 3521 bytes
+	// Total: 7042 bytes for 2 messages
+	expectedSegment0Size := int64(2 * (MessageHeaderSize + len(largeMessage) + 1))
+	if int64(len(segment0Data)) != expectedSegment0Size {
+		t.Errorf("Segment 0 size mismatch. Expected %d, got %d", expectedSegment0Size, len(segment0Data))
 	}
 
-	t.Logf("Segment 0 verified: %d bytes", len(segment0Data))
+	// Read and verify messages from segment 0 using headers
+	segFile0, err := os.OpenFile(segment0Path, os.O_RDONLY, 0644)
+	if err != nil {
+		t.Fatalf("Failed to open segment 0 for reading: %v", err)
+	}
+	defer segFile0.Close()
 
-	// Read segment at offset 7002 (3rd message triggers rotation)
-	segment1Path := dirPath + "/segment_7002.log"
+	sf0 := &SegmentFile{raw: segFile0}
+	msg0, err := sf0.Read()
+	if err != nil {
+		t.Fatalf("Failed to read message 0 from segment 0: %v", err)
+	}
+	if string(msg0.Data) != largeMessage+"0" {
+		t.Errorf("Message 0 content mismatch")
+	}
+	if msg0.Header.Offset != 0 {
+		t.Errorf("Message 0 offset: expected 0, got %d", msg0.Header.Offset)
+	}
+
+	msg1, err := sf0.Read()
+	if err != nil {
+		t.Fatalf("Failed to read message 1 from segment 0: %v", err)
+	}
+	if string(msg1.Data) != largeMessage+"1" {
+		t.Errorf("Message 1 content mismatch")
+	}
+
+	t.Logf("Segment 0 verified: %d bytes, 2 messages", len(segment0Data))
+
+	// Calculate expected offset for second segment (after first 2 messages with headers)
+	expectedSegment1Offset := int64(2 * (MessageHeaderSize + len(largeMessage) + 1))
+	segment1Path := dirPath + "/segment_" + strconv.FormatInt(expectedSegment1Offset, 10) + ".log"
 	segment1Data, err := os.ReadFile(segment1Path)
 	if err != nil {
-		t.Fatalf("Failed to read segment at offset 7002: %v", err)
+		t.Fatalf("Failed to read segment at offset %d: %v", expectedSegment1Offset, err)
 	}
 
-	expectedSegment1Content := largeMessage + "2" + largeMessage + "3"
-	if string(segment1Data) != expectedSegment1Content {
-		t.Errorf("Segment 7002 content mismatch. Expected length %d, got %d", len(expectedSegment1Content), len(segment1Data))
+	// Segment 1 should contain last 2 messages with headers
+	expectedSegment1Size := int64(2 * (MessageHeaderSize + len(largeMessage) + 1))
+	if int64(len(segment1Data)) != expectedSegment1Size {
+		t.Errorf("Segment 1 size mismatch. Expected %d, got %d", expectedSegment1Size, len(segment1Data))
 	}
 
-	t.Logf("Segment 7002 verified: %d bytes", len(segment1Data))
+	// Read and verify messages from segment 1 using headers
+	segFile1, err := os.OpenFile(segment1Path, os.O_RDONLY, 0644)
+	if err != nil {
+		t.Fatalf("Failed to open segment 1 for reading: %v", err)
+	}
+	defer segFile1.Close()
+
+	sf1 := &SegmentFile{raw: segFile1}
+	msg2, err := sf1.Read()
+	if err != nil {
+		t.Fatalf("Failed to read message 2 from segment 1: %v", err)
+	}
+	if string(msg2.Data) != largeMessage+"2" {
+		t.Errorf("Message 2 content mismatch")
+	}
+	if msg2.Header.Offset != expectedSegment1Offset {
+		t.Errorf("Message 2 offset: expected %d, got %d", expectedSegment1Offset, msg2.Header.Offset)
+	}
+
+	msg3, err := sf1.Read()
+	if err != nil {
+		t.Fatalf("Failed to read message 3 from segment 1: %v", err)
+	}
+	if string(msg3.Data) != largeMessage+"3" {
+		t.Errorf("Message 3 content mismatch")
+	}
+
+	t.Logf("Segment at offset %d verified: %d bytes, 2 messages", expectedSegment1Offset, len(segment1Data))
 
 	// Verify segment index
 	if len(partition.SegmentIndex) != 2 {
@@ -1932,13 +2029,13 @@ func TestFlushLogs_ReadRawLogFileMultipleSegments(t *testing.T) {
 		t.Errorf("Segment 0: expected start offset 0, got %d", partition.SegmentIndex[0].StartOffset)
 	}
 
-	// Second segment should start at offset 7002
-	if partition.SegmentIndex[1].StartOffset != 7002 {
-		t.Errorf("Segment 1: expected start offset 7002, got %d", partition.SegmentIndex[1].StartOffset)
+	// Second segment should start at calculated offset
+	if partition.SegmentIndex[1].StartOffset != expectedSegment1Offset {
+		t.Errorf("Segment 1: expected start offset %d, got %d", expectedSegment1Offset, partition.SegmentIndex[1].StartOffset)
 	}
 
-	// Verify NextOffset
-	expectedNextOffset := 10503 + len(largeMessage) + 1 // offset + message + "3"
+	// Verify NextOffset - should be after all 4 messages with their headers
+	expectedNextOffset := int64(4*MessageHeaderSize + 4*(len(largeMessage)+1))
 	if partition.NextOffset != expectedNextOffset {
 		t.Errorf("Expected NextOffset %d, got %d", expectedNextOffset, partition.NextOffset)
 	}
@@ -1972,7 +2069,7 @@ func TestFlushLogs_HumanReadableLogsMatchRaw(t *testing.T) {
 	}
 
 	// Find partition assigned to this broker
-	var assignedPartition PartitionKey
+	var assignedPartition cluster.PartitionKey
 	found := false
 	for partKey, port := range broker.ClusterMetadata.TopicsMetadata.Topics[topicName].Partitions {
 		if port == broker.port {
@@ -1987,20 +2084,13 @@ func TestFlushLogs_HumanReadableLogsMatchRaw(t *testing.T) {
 	}
 
 	// Publish messages
-	messages := []struct {
-		content string
-		offset  int
-	}{
-		{"First message", 0},
-		{"Second message", 13},
-		{"Third message", 27},
-	}
+	messages := []string{"First message", "Second message", "Third message"}
 
-	for _, msg := range messages {
+	for _, msgContent := range messages {
 		publishReq := &producerpb.PublishRequest{
 			Topic:        topicName,
 			PartitionKey: int32(assignedPartition),
-			Message:      msg.content,
+			Message:      msgContent,
 		}
 
 		_, err := broker.PublishMessage(context.Background(), publishReq)
@@ -2030,22 +2120,51 @@ func TestFlushLogs_HumanReadableLogsMatchRaw(t *testing.T) {
 		t.Fatalf("Failed to read human-readable log file: %v", err)
 	}
 
-	// Verify raw log contains all messages concatenated
-	expectedRaw := "First messageSecond messageThird message"
-	if string(rawLogData) != expectedRaw {
-		t.Errorf("Raw log mismatch. Expected '%s', got '%s'", expectedRaw, string(rawLogData))
+	// Verify raw log contains all messages with headers (20 bytes per header)
+	// Each message: 20 bytes header + message data
+	expectedRawSize := int64(len(messages) * MessageHeaderSize)
+	for _, msg := range messages {
+		expectedRawSize += int64(len(msg))
+	}
+	if int64(len(rawLogData)) != expectedRawSize {
+		t.Errorf("Raw log size mismatch. Expected %d bytes, got %d bytes", expectedRawSize, len(rawLogData))
 	}
 
-	// Verify human-readable log contains offset annotations
+	// Read and verify messages from raw log using headers
+	rawLogFile, err := os.OpenFile(rawLogPath, os.O_RDONLY, 0644)
+	if err != nil {
+		t.Fatalf("Failed to open raw log file for reading: %v", err)
+	}
+	defer rawLogFile.Close()
+
+	sf := &SegmentFile{raw: rawLogFile}
+	expectedOffset := int64(0)
+	for i, expectedMsg := range messages {
+		msg, err := sf.Read()
+		if err != nil {
+			t.Fatalf("Failed to read message %d from raw log: %v", i, err)
+		}
+		if string(msg.Data) != expectedMsg {
+			t.Errorf("Message %d content mismatch. Expected '%s', got '%s'", i, expectedMsg, string(msg.Data))
+		}
+		if msg.Header.Offset != expectedOffset {
+			t.Errorf("Message %d offset mismatch. Expected %d, got %d", i, expectedOffset, msg.Header.Offset)
+		}
+		expectedOffset += int64(MessageHeaderSize) + int64(len(msg.Data))
+	}
+
+	// Verify human-readable log contains offset annotations with correct offsets
 	humanReadableStr := string(humanReadableData)
-	for _, msg := range messages {
-		expectedLine := "Offset " + strconv.Itoa(msg.offset) + ": " + msg.content
+	expectedOffset = int64(0)
+	for _, msgContent := range messages {
+		expectedLine := "Offset " + strconv.FormatInt(expectedOffset, 10) + ": " + msgContent
 		if !contains(humanReadableStr, expectedLine) {
 			t.Errorf("Human-readable log missing expected line: %s", expectedLine)
 		}
+		expectedOffset += int64(MessageHeaderSize) + int64(len(msgContent))
 	}
 
-	t.Logf("Raw log: %d bytes", len(rawLogData))
+	t.Logf("Raw log: %d bytes (with headers)", len(rawLogData))
 	t.Logf("Human-readable log:\n%s", string(humanReadableData))
 
 	// Clean up
@@ -2073,10 +2192,10 @@ func setupBrokerWithEtcd(t *testing.T) *brokerServer {
 	}
 
 	broker.etcdClient = etcdClient
-	broker.port = Port(8080)
-	broker.ClusterMetadata = ClusterMetadata{
-		TopicsMetadata:  &TopicsMetadata{Topics: make(map[string]*TopicMetadata)},
-		BrokersMetadata: &BrokersMetadata{Brokers: map[Port]*BrokerMetadata{Port(8080): {Port: Port(8080)}}},
+	broker.port = cluster.Port(8080)
+	broker.ClusterMetadata = cluster.ClusterMetadata{
+		TopicsMetadata:  &cluster.TopicsMetadata{Topics: make(map[string]*cluster.TopicMetadata)},
+		BrokersMetadata: &cluster.BrokersMetadata{Brokers: map[cluster.Port]*cluster.BrokerMetadata{cluster.Port(8080): {Port: cluster.Port(8080)}}},
 	}
 
 	return broker

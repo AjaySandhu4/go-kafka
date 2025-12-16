@@ -2,6 +2,7 @@ package consumer
 
 import (
 	"context"
+	"go-kafka/cluster"
 	"log"
 	"testing"
 	"time"
@@ -330,7 +331,10 @@ func TestRebalance_SingleConsumerSinglePartition(t *testing.T) {
 
 	// Subscribe to topic
 	consumer.subscribedTopics = map[string]*ConsumerTopicMetadata{
-		topicName: {Name: topicName},
+		topicName: {
+			Name:                 topicName,
+			PartitionMetadataMap: make(map[cluster.PartitionKey]*PartitionMetadata),
+		},
 	}
 
 	time.Sleep(1 * time.Second)
@@ -401,10 +405,16 @@ func TestRebalance_TwoConsumersFourPartitions(t *testing.T) {
 
 	// Subscribe both consumers to topic
 	consumer1.subscribedTopics = map[string]*ConsumerTopicMetadata{
-		topicName: {Name: topicName},
+		topicName: {
+			Name:                 topicName,
+			PartitionMetadataMap: make(map[cluster.PartitionKey]*PartitionMetadata),
+		},
 	}
 	consumer2.subscribedTopics = map[string]*ConsumerTopicMetadata{
-		topicName: {Name: topicName},
+		topicName: {
+			Name:                 topicName,
+			PartitionMetadataMap: make(map[cluster.PartitionKey]*PartitionMetadata),
+		},
 	}
 
 	// Trigger rebalance on both consumers
@@ -486,7 +496,10 @@ func TestRebalance_ThreeConsumersFourPartitions(t *testing.T) {
 		defer consumers[i].StopConsumer()
 
 		consumers[i].subscribedTopics = map[string]*ConsumerTopicMetadata{
-			topicName: {Name: topicName},
+			topicName: {
+				Name:                 topicName,
+				PartitionMetadataMap: make(map[cluster.PartitionKey]*PartitionMetadata),
+			},
 		}
 	}
 
@@ -573,10 +586,16 @@ func TestRebalance_ConsumerLeaves(t *testing.T) {
 
 	// Subscribe to topic
 	consumer1.subscribedTopics = map[string]*ConsumerTopicMetadata{
-		topicName: {Name: topicName},
+		topicName: {
+			Name:                 topicName,
+			PartitionMetadataMap: make(map[cluster.PartitionKey]*PartitionMetadata),
+		},
 	}
 	consumer2.subscribedTopics = map[string]*ConsumerTopicMetadata{
-		topicName: {Name: topicName},
+		topicName: {
+			Name:                 topicName,
+			PartitionMetadataMap: make(map[cluster.PartitionKey]*PartitionMetadata),
+		},
 	}
 
 	// Initial rebalance
@@ -655,7 +674,10 @@ func TestRebalance_MoreConsumersThanPartitions(t *testing.T) {
 		defer consumers[i].StopConsumer()
 
 		consumers[i].subscribedTopics = map[string]*ConsumerTopicMetadata{
-			topicName: {Name: topicName},
+			topicName: {
+				Name:                 topicName,
+				PartitionMetadataMap: make(map[cluster.PartitionKey]*PartitionMetadata),
+			},
 		}
 	}
 

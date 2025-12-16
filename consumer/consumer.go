@@ -3,15 +3,20 @@ package consumer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"strconv"
 	"sync"
 	"time"
 
+	"go-kafka/cluster"
+	consumerpb "go-kafka/proto/consumer"
+
 	"github.com/google/uuid"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 
-	"go-kafka/broker"
 	"slices"
 )
 
@@ -34,16 +39,24 @@ type Consumer struct {
 	group            *ConsumerGroup
 	subscribedTopics map[string]*ConsumerTopicMetadata
 	partitionLease   clientv3.LeaseID
+	brokersMetadata  *cluster.BrokersMetadata
+	topicsMetadata   *cluster.TopicsMetadata
+	clientConn       map[cluster.Port]*ClientConn
+}
+
+type ClientConn struct {
+	conn   *grpc.ClientConn
+	client consumerpb.ConsumerServiceClient
 }
 
 type ConsumerTopicMetadata struct {
 	Name                 string
-	PartitionMetadataMap map[*broker.PartitionKey]*PartitionMetadata
+	PartitionMetadataMap map[cluster.PartitionKey]*PartitionMetadata
 }
 
 type PartitionMetadata struct {
-	Partition  broker.PartitionKey
-	Broker     broker.Port
+	Partition  cluster.PartitionKey
+	Broker     cluster.Port
 	LastOffset int
 }
 
@@ -51,10 +64,11 @@ func NewConsumer(groupID string) *Consumer {
 	log.Println("Creating new Consumer...")
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Consumer{
-		ID:      ConsumerID(uuid.New().String()),
-		GroupID: ConsumerGroupID(groupID),
-		ctx:     ctx,
-		cancel:  cancel,
+		ID:               ConsumerID(uuid.New().String()),
+		GroupID:          ConsumerGroupID(groupID),
+		ctx:              ctx,
+		cancel:           cancel,
+		subscribedTopics: make(map[string]*ConsumerTopicMetadata),
 	}
 	var err error
 
@@ -69,6 +83,7 @@ func NewConsumer(groupID string) *Consumer {
 	}
 
 	c.registerConsumerWatcher()
+	c.registerBrokerWatcher()
 
 	err = c.joinGroup(groupID)
 	if err != nil {
@@ -147,7 +162,23 @@ func (c *Consumer) registerConsumerWatcher() {
 	}()
 }
 
+func (c *Consumer) registerBrokerWatcher() {
+	// Implement the logic to watch for changes in the broker metadata
+	watchChan := c.etcdClient.Watch(c.ctx, "/broker/", clientv3.WithPrefix())
+	go func() {
+		for watchResp := range watchChan {
+			for _, event := range watchResp.Events {
+				log.Printf("Consumer %s received broker event: %s %q\n", c.ID, event.Type, event.Kv.Key)
+				c.fetchBrokerMetadata()
+				c.populateClientConnections()
+			}
+		}
+	}()
+}
+
 func (c *Consumer) rebalanceConsumer(event *clientv3.Event) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	// Implement the logic to rebalance consumers in the group
 	log.Printf("Rebalancing consumers for event: %s %q\n", event.Type, event.Kv.Key)
 	// For example, if a new consumer joins or leaves, rebalance partitions
@@ -213,7 +244,14 @@ func (c *Consumer) rebalanceConsumer(event *clientv3.Event) {
 
 	// Repeat partition assignment for each topic
 	for topic := range c.subscribedTopics {
-		partitionSet := make(map[broker.PartitionKey]struct{})
+		// Initialize topic metadata if not already done
+		if c.subscribedTopics[topic] == nil {
+			c.subscribedTopics[topic] = &ConsumerTopicMetadata{
+				Name:                 topic,
+				PartitionMetadataMap: make(map[cluster.PartitionKey]*PartitionMetadata),
+			}
+		}
+		partitionSet := make(map[cluster.PartitionKey]struct{})
 		// Read in array of partitions for topic (set P)
 		topicRes, err := c.etcdClient.Get(c.ctx, "/topic/"+topic, clientv3.WithPrefix())
 		if err != nil {
@@ -221,7 +259,7 @@ func (c *Consumer) rebalanceConsumer(event *clientv3.Event) {
 			continue
 		}
 		for _, kv := range topicRes.Kvs {
-			var meta broker.TopicMetadata
+			var meta cluster.TopicMetadata
 			if err := json.Unmarshal(kv.Value, &meta); err != nil {
 				log.Printf("Failed to unmarshal topic metadata: %v", err)
 				continue
@@ -230,7 +268,7 @@ func (c *Consumer) rebalanceConsumer(event *clientv3.Event) {
 				partitionSet[pk] = struct{}{}
 			}
 		}
-		partitions := make([]broker.PartitionKey, 0, len(partitionSet))
+		partitions := make([]cluster.PartitionKey, 0, len(partitionSet))
 		for pk := range partitionSet {
 			partitions = append(partitions, pk)
 		}
@@ -247,13 +285,13 @@ func (c *Consumer) rebalanceConsumer(event *clientv3.Event) {
 		log.Println("Partitions per consumer:", partitionsPerConsumer)
 		extraPartitions := len(partitions) % len(consumers)
 		log.Println("Remainder partitions:", extraPartitions)
-		var assignedPartitions []broker.PartitionKey
+		var assignedPartitions []cluster.PartitionKey
 		if partitionsPerConsumer == 0 {
 			if consumerIndex >= extraPartitions {
 				log.Printf("Consumer %s will not be assigned any partitions for topic %s", c.ID, topic)
 				continue
 			}
-			assignedPartitions = []broker.PartitionKey{partitions[consumerIndex]}
+			assignedPartitions = []cluster.PartitionKey{partitions[consumerIndex]}
 		} else if consumerIndex == len(consumers)-1 && extraPartitions > 0 {
 			assignedPartitions = partitions[consumerIndex*partitionsPerConsumer:]
 		} else {
@@ -289,6 +327,22 @@ func (c *Consumer) rebalanceConsumer(event *clientv3.Event) {
 			if success {
 				log.Printf("Consumer %s successfully assigned partition %d of topic %s after %d attempt(s)",
 					c.ID, pk, topic, attempts)
+				// Get broker port from topics metadata
+				var brokerPort cluster.Port
+				if c.topicsMetadata != nil && c.topicsMetadata.Topics[topic] != nil {
+					brokerPort = c.topicsMetadata.Topics[topic].Partitions[pk]
+				}
+				c.subscribedTopics[topic].PartitionMetadataMap[pk] = &PartitionMetadata{
+					Partition:  pk,
+					Broker:     brokerPort,
+					LastOffset: -1,
+				}
+				lastOffset, err := c.getPartitionOffset(topic, pk)
+				if err != nil {
+					log.Printf("Consumer %s failed to get last offset for partition %d of topic %s: %v", c.ID, pk, topic, err)
+					lastOffset = 0 // Default to 0 on failure
+				}
+				c.subscribedTopics[topic].PartitionMetadataMap[pk].LastOffset = lastOffset
 			} else {
 				log.Printf("Consumer %s failed to assign partition %d of topic %s after %d attempts",
 					c.ID, pk, topic, attempts)
@@ -296,14 +350,27 @@ func (c *Consumer) rebalanceConsumer(event *clientv3.Event) {
 		}
 		log.Printf("Consumer %s completed partition assignment for topic %s", c.ID, topic)
 	}
+
 	log.Printf("Consumer %s completed handling consumer group change", c.ID)
 
 }
 
-func (c *Consumer) pullMessages(topicName string, maxMsgs int, maxBytes int) [][]byte {
+func (c *Consumer) pullMessages(topicName string, maxMsgs int, maxBytes int) ([][]byte, error) {
 	var messages [][]byte
-	// Implement the logic to pull messages from the specified topic
-	return messages
+	if c.subscribedTopics[topicName] == nil {
+		log.Printf("Consumer %s is not subscribed to topic %s", c.ID, topicName)
+		return nil, errors.New("Not subscribed to topic")
+	}
+	if c.brokersMetadata == nil {
+		log.Printf("Consumer %s has no broker metadata", c.ID)
+		return nil, errors.New("No broker metadata")
+	}
+	c.mu.RLock()
+	_ = c.subscribedTopics[topicName] // TODO: Use this to pull messages from assigned partitions
+	c.mu.RUnlock()
+
+	// TODO: Implement the logic to pull messages from the specified topic
+	return messages, nil
 }
 
 func (c *Consumer) setupPartitionLease() error {
@@ -334,7 +401,7 @@ func (c *Consumer) setupPartitionLease() error {
 // 1. Key doesn't exist -> claim it
 // 2. Key exists but lease expired -> clean up and claim it
 // 3. Key exists with valid lease -> return false
-func (c *Consumer) assignedPartition(topic string, partition broker.PartitionKey) bool {
+func (c *Consumer) assignedPartition(topic string, partition cluster.PartitionKey) bool {
 	assignmentKey := "/consumer-group/" + string(c.GroupID) + "/" + topic + "/" + strconv.Itoa(int(partition)) + "/assignment"
 
 	// First, get the current assignment state
@@ -406,4 +473,72 @@ func (c *Consumer) assignedPartition(topic string, partition broker.PartitionKey
 	log.Printf("Consumer %s cannot claim partition %d of topic %s (owned by %s with valid lease, TTL=%d)",
 		c.ID, partition, topic, currentOwner, leaseResp.TTL)
 	return false
+}
+
+func (c *Consumer) fetchBrokerMetadata() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	brokersMetadata, err := cluster.FetchBrokerMetadata(c.etcdClient)
+	if err != nil {
+		return err
+	}
+	c.brokersMetadata = brokersMetadata
+
+	// Also fetch topic metadata
+	topicsMetadata, err := cluster.FetchTopicMetadata(c.etcdClient)
+	if err != nil {
+		return err
+	}
+	c.topicsMetadata = topicsMetadata
+
+	return nil
+}
+
+func (c *Consumer) populateClientConnections() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.clientConn == nil {
+		c.clientConn = make(map[cluster.Port]*ClientConn)
+	}
+
+	for port := range c.brokersMetadata.Brokers {
+		if _, exists := c.clientConn[port]; !exists {
+			conn, err := grpc.NewClient("localhost:"+strconv.Itoa(int(port)), grpc.WithTransportCredentials(insecure.NewCredentials()))
+			if err != nil {
+				log.Printf("Failed to connect to broker at port %d: %v", port, err)
+				return err
+			}
+			c.clientConn[port] = &ClientConn{
+				conn:   conn,
+				client: consumerpb.NewConsumerServiceClient(conn),
+			}
+			log.Printf("Connected to broker at port %d", port)
+		}
+	}
+	return nil
+}
+
+func (c *Consumer) getPartitionOffset(topic string, partition cluster.PartitionKey) (int, error) {
+	offsetKey := "/topic/" + topic + "/partitions/" + strconv.Itoa(int(partition)) + "/offset"
+	_, err := c.etcdClient.Txn(c.ctx).
+		If(clientv3.Compare(clientv3.ModRevision(offsetKey), "=", 0)).
+		Then(clientv3.OpPut(offsetKey, "0")).
+		Commit()
+	res, err := c.etcdClient.Get(c.ctx, offsetKey)
+	if err != nil {
+		log.Printf("Consumer %s failed to get offset for partition %d of topic %s: %v", c.ID, partition, topic, err)
+		return -1, err
+	}
+	if len(res.Kvs) == 0 {
+		log.Printf("No offset found for partition %d of topic %s in topic metadata", partition, topic)
+		return -1, nil
+	}
+	var offset int
+	if err := json.Unmarshal(res.Kvs[0].Value, &offset); err != nil {
+		log.Printf("Consumer %s failed to unmarshal offset for partition %d of topic %s: %v", c.ID, partition, topic, err)
+		return -1, err
+	}
+	return offset, nil
 }
