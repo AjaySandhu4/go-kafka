@@ -8,7 +8,7 @@ import (
 	"io"
 )
 
-func (b *brokerServer) consumeMessages(ctx context.Context, req *consumerpb.ConsumeRequest) (*consumerpb.ConsumeResponse, error) {
+func (b *brokerServer) ConsumeMessages(ctx context.Context, req *consumerpb.ConsumeRequest) (*consumerpb.ConsumeResponse, error) {
 	// Implement the logic to consume messages from the specified topic and partition
 	// Steps:
 	// 1. Validate topic and partition
@@ -55,11 +55,20 @@ func (b *brokerServer) consumeMessages(ctx context.Context, req *consumerpb.Cons
 	}
 	partition.partitionMu.RLock()
 
-	// Validate offset
-	if offset < 0 || offset > int64(partition.LastPersistedOffset) {
-		return nil, errors.New("Invalid offset")
+	// Check if there are any persisted messages
+	if partition.LastPersistedOffset < 0 {
+		partition.partitionMu.RUnlock()
+		// No messages persisted yet, return empty response
+		return &consumerpb.ConsumeResponse{LastOffset: -1, Messages: []*consumerpb.Message{}}, nil
 	}
 
+	// Validate offset - allow reading from 0 to LastPersistedOffset (inclusive)
+	if offset < 0 {
+		partition.partitionMu.RUnlock()
+		return nil, errors.New("Invalid offset: offset cannot be negative")
+	}
+
+	// Find the segment containing this offset
 	segmentIndex, segmentMeta, err := partition.GetSegmentContainingOffset(offset)
 	if err != nil {
 		partition.partitionMu.RUnlock()
@@ -76,9 +85,16 @@ func (b *brokerServer) consumeMessages(ctx context.Context, req *consumerpb.Cons
 	if err != nil {
 		return nil, err
 	}
-	err = segmentFile.SeekToOffset(offset)
-	if err != nil {
-		return nil, err
+	defer segmentFile.Close()
+	
+	// Seek to the requested offset within the segment
+	// The offset is relative to the start of the segment
+	offsetInSegment := offset - segmentMeta.StartOffset
+	if offsetInSegment > 0 {
+		err = segmentFile.SeekToOffset(offsetInSegment)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	for bytesRead < req.MaxBytes && msgsRead < req.MaxMessages {
@@ -94,11 +110,22 @@ func (b *brokerServer) consumeMessages(ctx context.Context, req *consumerpb.Cons
 			}
 			nextSegmentMeta := partition.SegmentIndex[segmentIndex]
 			partition.partitionMu.RUnlock()
+			
+			// Close current segment file
+			segmentFile.Close()
+			
+			// Open next segment
 			segmentFile, err = OpenSegmentFile(b.port, topic, partitionKey, nextSegmentMeta.StartOffset, false, true)
 			if err != nil {
 				return nil, err
 			}
+			// Continue to read from the new segment
+			continue
+		} else if err != nil {
+			// Some other error occurred
+			return nil, err
 		}
+		
 		messages = append(messages, &consumerpb.Message{
 			Header: &consumerpb.MessageHeader{
 				Size:     currMsg.Header.Size,

@@ -38,13 +38,20 @@ type MessageHeader struct {
 }
 
 func (p *Partition) GetSegmentContainingOffset(offset int64) (int, *Segment, error) {
-	index, found := slices.BinarySearchFunc(p.SegmentIndex, offset, func(seg *Segment, targetOffset int64) int {
-		return int(seg.StartOffset - targetOffset)
-	})
-	if found {
-		return index, p.SegmentIndex[index], nil
+	if len(p.SegmentIndex) == 0 {
+		return -1, nil, errors.New("No segments available")
 	}
-	return index - 1, p.SegmentIndex[index-1], nil
+	
+	// Find the segment that contains this offset
+	// We need the segment whose StartOffset <= offset < next segment's StartOffset
+	for i := len(p.SegmentIndex) - 1; i >= 0; i-- {
+		if p.SegmentIndex[i].StartOffset <= offset {
+			return i, p.SegmentIndex[i], nil
+		}
+	}
+	
+	// Offset is before all segments
+	return -1, nil, errors.New("Offset is before the first segment")
 }
 
 func (p *Partition) GetSegment(segmentID int64) (*Segment, error) {

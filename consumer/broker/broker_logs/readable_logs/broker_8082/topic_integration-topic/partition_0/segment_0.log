@@ -1,0 +1,13 @@
+Offset 0: Message 3: Database connection established
+Offset 62: Message 6: New user registered
+Offset 112: Message 13: Transaction completed
+Offset 165: Message 14: Email sent
+Offset 0: Message 2: File uploaded to server
+Offset 54: Message 5: User logout successful
+Offset 107: Message 7: Password changed successfully
+Offset 167: Message 8: Session expired for user
+Offset 222: Message 10: Server restarted
+Offset 270: Message 11: Cache cleared
+Offset 315: Message 12: API request received
+Offset 367: Message 16: Health check OK
+Offset 414: Message 17: Metrics collected

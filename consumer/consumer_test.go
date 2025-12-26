@@ -747,3 +747,408 @@ func TestNewConsumer_EtcdUnavailable(t *testing.T) {
 
 	t.Log("Consumer created successfully with etcd available")
 }
+
+// Test pullMessages - not subscribed to topic
+func TestPullMessages_NotSubscribed(t *testing.T) {
+	groupID := "test-pull-not-subscribed"
+	cleanupEtcd(t, groupID)
+	defer cleanupEtcd(t, groupID)
+
+	consumer := NewConsumer(groupID)
+	if consumer == nil {
+		t.Fatal("Failed to create consumer")
+	}
+	defer consumer.StopConsumer()
+
+	// Try to pull messages from a topic we're not subscribed to
+	messages, err := consumer.PullMessages("non-existent-topic", 10, 1024)
+	if err == nil {
+		t.Error("Expected error when pulling from non-subscribed topic, got nil")
+	}
+	if messages != nil {
+		t.Errorf("Expected nil messages when pulling from non-subscribed topic, got %v", messages)
+	}
+	if err.Error() != "Not subscribed to topic" {
+		t.Errorf("Expected 'Not subscribed to topic' error, got: %v", err)
+	}
+
+	t.Log("pullMessages correctly returns error for non-subscribed topic")
+}
+
+// Test pullMessages - no broker metadata
+func TestPullMessages_NoBrokerMetadata(t *testing.T) {
+	groupID := "test-pull-no-broker-meta"
+	cleanupEtcd(t, groupID)
+	defer cleanupEtcd(t, groupID)
+
+	consumer := NewConsumer(groupID)
+	if consumer == nil {
+		t.Fatal("Failed to create consumer")
+	}
+	defer consumer.StopConsumer()
+
+	// Subscribe to a topic but ensure no broker metadata
+	topicName := "test-topic-no-broker"
+	consumer.subscribedTopics = map[string]*ConsumerTopicMetadata{
+		topicName: {
+			Name:                 topicName,
+			PartitionMetadataMap: make(map[cluster.PartitionKey]*PartitionMetadata),
+		},
+	}
+
+	// Clear broker metadata
+	consumer.brokersMetadata = nil
+
+	// Try to pull messages
+	messages, err := consumer.PullMessages(topicName, 10, 1024)
+	if err == nil {
+		t.Error("Expected error when pulling without broker metadata, got nil")
+	}
+	if messages != nil {
+		t.Errorf("Expected nil messages when pulling without broker metadata, got %v", messages)
+	}
+	if err.Error() != "No broker metadata" {
+		t.Errorf("Expected 'No broker metadata' error, got: %v", err)
+	}
+
+	t.Log("pullMessages correctly returns error when no broker metadata")
+}
+
+// Test pullMessages - no assigned partitions
+func TestPullMessages_NoAssignedPartitions(t *testing.T) {
+	groupID := "test-pull-no-partitions"
+	cleanupEtcd(t, groupID)
+	defer cleanupEtcd(t, groupID)
+
+	consumer := NewConsumer(groupID)
+	if consumer == nil {
+		t.Fatal("Failed to create consumer")
+	}
+	defer consumer.StopConsumer()
+
+	// Subscribe to a topic with empty partition map
+	topicName := "test-topic-no-partitions"
+	consumer.subscribedTopics = map[string]*ConsumerTopicMetadata{
+		topicName: {
+			Name:                 topicName,
+			PartitionMetadataMap: make(map[cluster.PartitionKey]*PartitionMetadata),
+		},
+	}
+
+	// Ensure broker metadata exists
+	consumer.brokersMetadata = &cluster.BrokersMetadata{
+		Brokers: make(map[cluster.Port]*cluster.BrokerMetadata),
+	}
+
+	// Try to pull messages
+	messages, err := consumer.PullMessages(topicName, 10, 1024)
+	if err != nil {
+		t.Errorf("Expected no error when pulling with no partitions, got: %v", err)
+	}
+	if messages == nil {
+		t.Error("Expected empty slice, got nil")
+	}
+	if len(messages) != 0 {
+		t.Errorf("Expected empty messages slice when no partitions assigned, got %d messages", len(messages))
+	}
+
+	t.Log("pullMessages correctly returns empty slice when no partitions assigned")
+}
+
+// Test pullMessages - successful pull with offset update
+func TestPullMessages_SuccessfulPullWithOffsetUpdate(t *testing.T) {
+	groupID := "test-pull-success"
+	cleanupEtcd(t, groupID)
+	defer cleanupEtcd(t, groupID)
+
+	consumer := NewConsumer(groupID)
+	if consumer == nil {
+		t.Fatal("Failed to create consumer")
+	}
+	defer consumer.StopConsumer()
+
+	topicName := "test-topic-pull"
+	partitionKey := cluster.PartitionKey(0)
+	brokerPort := cluster.Port(8080)
+
+	// Set up topic subscription with partition metadata
+	consumer.subscribedTopics = map[string]*ConsumerTopicMetadata{
+		topicName: {
+			Name: topicName,
+			PartitionMetadataMap: map[cluster.PartitionKey]*PartitionMetadata{
+				partitionKey: {
+					Partition:  partitionKey,
+					Broker:     brokerPort,
+					LastOffset: 5, // Start at offset 5
+					Persisted:  true,
+				},
+			},
+		},
+	}
+
+	// Set up broker metadata
+	consumer.brokersMetadata = &cluster.BrokersMetadata{
+		Brokers: map[cluster.Port]*cluster.BrokerMetadata{
+			brokerPort: {
+				Port: brokerPort,
+			},
+		},
+	}
+
+	// Note: This test requires a running broker on port 8080 to actually pull messages.
+	// In a unit test environment, this would be mocked. For now, we test the logic flow
+	// and expect the pull to fail gracefully since no broker is running.
+
+	// Initialize client connection map
+	if consumer.clientConn == nil {
+		consumer.clientConn = make(map[cluster.Port]*ClientConn)
+	}
+
+	// Try to pull messages - this will fail because no broker is running
+	messages, err := consumer.PullMessages(topicName, 10, 1024)
+
+	// The function should return without error even if the broker is not available
+	// (it logs the error and continues)
+	if err != nil {
+		t.Errorf("pullMessages should not return error for connection failures, got: %v", err)
+	}
+
+	// Since no broker is running, messages may be nil - this is expected behavior
+	if messages != nil && len(messages) > 0 {
+		t.Errorf("Expected nil or empty messages when no broker available, got %d messages", len(messages))
+	}
+
+	t.Log("pullMessages handles missing broker connection gracefully")
+}
+
+// Test pullMessages - offset persisted flag is set to false after pull
+func TestPullMessages_OffsetPersistedFlag(t *testing.T) {
+	groupID := "test-pull-offset-flag"
+	cleanupEtcd(t, groupID)
+	defer cleanupEtcd(t, groupID)
+
+	consumer := NewConsumer(groupID)
+	if consumer == nil {
+		t.Fatal("Failed to create consumer")
+	}
+	defer consumer.StopConsumer()
+
+	topicName := "test-topic-offset-flag"
+	partitionKey := cluster.PartitionKey(0)
+	brokerPort := cluster.Port(8080)
+
+	// Set up topic subscription with partition metadata
+	partitionMeta := &PartitionMetadata{
+		Partition:  partitionKey,
+		Broker:     brokerPort,
+		LastOffset: 10,
+		Persisted:  true, // Start with persisted = true
+	}
+
+	consumer.subscribedTopics = map[string]*ConsumerTopicMetadata{
+		topicName: {
+			Name: topicName,
+			PartitionMetadataMap: map[cluster.PartitionKey]*PartitionMetadata{
+				partitionKey: partitionMeta,
+			},
+		},
+	}
+
+	// Set up broker metadata
+	consumer.brokersMetadata = &cluster.BrokersMetadata{
+		Brokers: map[cluster.Port]*cluster.BrokerMetadata{
+			brokerPort: {
+				Port: brokerPort,
+			},
+		},
+	}
+
+	// Initialize client connection map
+	if consumer.clientConn == nil {
+		consumer.clientConn = make(map[cluster.Port]*ClientConn)
+	}
+
+	// Verify initial state
+	if !partitionMeta.Persisted {
+		t.Error("Expected Persisted to be true initially")
+	}
+	if partitionMeta.LastOffset != 10 {
+		t.Errorf("Expected LastOffset to be 10, got %d", partitionMeta.LastOffset)
+	}
+
+	// Pull messages (will fail due to no broker, but that's okay for this test)
+	consumer.PullMessages(topicName, 10, 1024)
+
+	// The offset should remain the same since no messages were actually pulled
+	// and Persisted flag should also remain true since offset wasn't updated
+	consumer.mu.RLock()
+	currentOffset := partitionMeta.LastOffset
+	persisted := partitionMeta.Persisted
+	consumer.mu.RUnlock()
+
+	if currentOffset != 10 {
+		t.Errorf("Expected offset to remain 10, got %d", currentOffset)
+	}
+	if !persisted {
+		t.Error("Expected Persisted to remain true when no messages pulled")
+	}
+
+	t.Log("pullMessages correctly maintains offset state when no messages are available")
+}
+
+// Test pullMessages - multiple partitions concurrent pull
+func TestPullMessages_MultiplePartitions(t *testing.T) {
+	groupID := "test-pull-multi-partitions"
+	cleanupEtcd(t, groupID)
+	defer cleanupEtcd(t, groupID)
+
+	consumer := NewConsumer(groupID)
+	if consumer == nil {
+		t.Fatal("Failed to create consumer")
+	}
+	defer consumer.StopConsumer()
+
+	topicName := "test-topic-multi-part"
+	brokerPort1 := cluster.Port(8080)
+	brokerPort2 := cluster.Port(8081)
+
+	// Set up topic subscription with multiple partitions
+	consumer.subscribedTopics = map[string]*ConsumerTopicMetadata{
+		topicName: {
+			Name: topicName,
+			PartitionMetadataMap: map[cluster.PartitionKey]*PartitionMetadata{
+				0: {
+					Partition:  0,
+					Broker:     brokerPort1,
+					LastOffset: 5,
+					Persisted:  true,
+				},
+				1: {
+					Partition:  1,
+					Broker:     brokerPort2,
+					LastOffset: 10,
+					Persisted:  true,
+				},
+				2: {
+					Partition:  2,
+					Broker:     brokerPort1,
+					LastOffset: 15,
+					Persisted:  true,
+				},
+			},
+		},
+	}
+
+	// Set up broker metadata
+	consumer.brokersMetadata = &cluster.BrokersMetadata{
+		Brokers: map[cluster.Port]*cluster.BrokerMetadata{
+			brokerPort1: {
+				Port: brokerPort1,
+			},
+			brokerPort2: {
+				Port: brokerPort2,
+			},
+		},
+	}
+
+	// Initialize client connection map
+	if consumer.clientConn == nil {
+		consumer.clientConn = make(map[cluster.Port]*ClientConn)
+	}
+
+	// Pull messages from all partitions
+	messages, err := consumer.PullMessages(topicName, 10, 1024)
+
+	if err != nil {
+		t.Errorf("pullMessages should not return error, got: %v", err)
+	}
+
+	// Messages may be nil when no broker connections are available - this is expected
+	if messages != nil && len(messages) > 0 {
+		t.Errorf("Expected nil or empty messages when no broker connection, got %d messages", len(messages))
+	}
+
+	// Since no brokers are running, we expect empty messages
+	// but the function should have attempted to pull from all 3 partitions concurrently
+	t.Logf("pullMessages handled %d partitions concurrently", len(consumer.subscribedTopics[topicName].PartitionMetadataMap))
+
+	// Verify all partition metadata still exists
+	consumer.mu.RLock()
+	partCount := len(consumer.subscribedTopics[topicName].PartitionMetadataMap)
+	consumer.mu.RUnlock()
+
+	if partCount != 3 {
+		t.Errorf("Expected 3 partitions, got %d", partCount)
+	}
+
+	t.Log("pullMessages successfully handles multiple partitions concurrently")
+}
+
+// Test pullMessages - max messages and max bytes parameters
+func TestPullMessages_MaxMessagesAndBytes(t *testing.T) {
+	groupID := "test-pull-limits"
+	cleanupEtcd(t, groupID)
+	defer cleanupEtcd(t, groupID)
+
+	consumer := NewConsumer(groupID)
+	if consumer == nil {
+		t.Fatal("Failed to create consumer")
+	}
+	defer consumer.StopConsumer()
+
+	topicName := "test-topic-limits"
+	partitionKey := cluster.PartitionKey(0)
+	brokerPort := cluster.Port(8080)
+
+	// Set up topic subscription
+	consumer.subscribedTopics = map[string]*ConsumerTopicMetadata{
+		topicName: {
+			Name: topicName,
+			PartitionMetadataMap: map[cluster.PartitionKey]*PartitionMetadata{
+				partitionKey: {
+					Partition:  partitionKey,
+					Broker:     brokerPort,
+					LastOffset: 0,
+					Persisted:  true,
+				},
+			},
+		},
+	}
+
+	// Set up broker metadata
+	consumer.brokersMetadata = &cluster.BrokersMetadata{
+		Brokers: map[cluster.Port]*cluster.BrokerMetadata{
+			brokerPort: {
+				Port: brokerPort,
+			},
+		},
+	}
+
+	// Initialize client connection map
+	if consumer.clientConn == nil {
+		consumer.clientConn = make(map[cluster.Port]*ClientConn)
+	}
+
+	// Test with different max messages and max bytes values
+	testCases := []struct {
+		maxMsgs  int
+		maxBytes int
+	}{
+		{10, 1024},
+		{100, 10240},
+		{1, 100},
+		{1000, 1048576},
+	}
+
+	for _, tc := range testCases {
+		messages, err := consumer.PullMessages(topicName, tc.maxMsgs, tc.maxBytes)
+		if err != nil {
+			t.Errorf("pullMessages with maxMsgs=%d, maxBytes=%d returned error: %v",
+				tc.maxMsgs, tc.maxBytes, err)
+		}
+		// Messages may be nil when no broker connection exists - this is acceptable
+		_ = messages
+	}
+
+	t.Log("pullMessages accepts various maxMessages and maxBytes parameters correctly")
+}

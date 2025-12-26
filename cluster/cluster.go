@@ -59,6 +59,16 @@ func FetchBrokerMetadata(client *clientv3.Client) (*BrokersMetadata, error) {
 		brokersMetadata.Brokers[Port(port)] = &BrokerMetadata{Port: Port(port)}
 	}
 
+	// Fetch controller info
+	controllerResp, err := client.Get(context.Background(), "controller")
+	if err == nil && len(controllerResp.Kvs) > 0 {
+		controllerPort, err := strconv.Atoi(string(controllerResp.Kvs[0].Value))
+		if err == nil {
+			brokersMetadata.Controller = Port(controllerPort)
+			log.Printf("Controller port fetched: %d", controllerPort)
+		}
+	}
+
 	return brokersMetadata, nil
 }
 

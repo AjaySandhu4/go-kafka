@@ -1,9 +1,13 @@
 # go-kafka
+A simple Kafka-like message broker system implemented in Go, using etcd for coordination.
 
+
+
+# Instructions to run:
 Start etcd cluster with "make run_cluster"
 
-# etcd data:
 
+# etcd data structure:
 /broker/<PORT> 
     - port serves as ID for broker
     - broker maintains this entry with leases
@@ -26,5 +30,5 @@ Start etcd cluster with "make run_cluster"
     - indicates that broker at <PORT> is hosting partition <PARTITION_ID> of <TOPIC>
 
 
-# Broker message files:
+# Broker message file structure:
 /broker/<PORT>/<TOPIC>/<PARTITION_KEY>/<SEGMENT-ID (offset)>

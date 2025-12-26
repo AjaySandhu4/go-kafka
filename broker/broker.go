@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"go-kafka/cluster"
+	consumerpb "go-kafka/proto/consumer"
 	producerpb "go-kafka/proto/producer"
 	"log"
 	"net"
@@ -17,6 +18,7 @@ import (
 
 type brokerServer struct {
 	producerpb.UnimplementedProducerServiceServer
+	consumerpb.UnimplementedConsumerServiceServer
 	Topics          map[string]*TopicData
 	ClusterMetadata cluster.ClusterMetadata
 	port            cluster.Port
@@ -86,6 +88,10 @@ func (b *brokerServer) StartBroker() {
 		log.Fatalf("Failed to fetch topic metadata: %v", err)
 	}
 	b.metadataMu.Unlock()
+
+	// Initialize local topics for partitions assigned to this broker
+	b.initializeLocalTopics()
+
 	b.fetchOrElectController()
 
 	b.registerControllerWatcher()
@@ -95,6 +101,7 @@ func (b *brokerServer) StartBroker() {
 	// Start the gRPC server
 	server := grpc.NewServer()
 	producerpb.RegisterProducerServiceServer(server, b)
+	consumerpb.RegisterConsumerServiceServer(server, b)
 	listener, err := net.Listen("tcp", ":"+strconv.Itoa(int(b.port)))
 	if err != nil {
 		log.Fatalf("Failed to listen: %v", err)
@@ -163,10 +170,44 @@ func (b *brokerServer) registerTopicWatcher() {
 					log.Printf("Failed to fetch topic metadata: %v", err)
 					continue
 				}
+				// Initialize local topics for partitions assigned to this broker
+				b.initializeLocalTopics()
 				log.Printf("Topic metadata refreshed due to etcd event: %s %q : %q", ev.Type, ev.Kv.Key, ev.Kv.Value)
 			}
 		}
 	}()
+}
+
+// initializeLocalTopics creates local TopicData structures for topics that have partitions assigned to this broker
+func (b *brokerServer) initializeLocalTopics() {
+	b.metadataMu.RLock()
+	defer b.metadataMu.RUnlock()
+	b.topicsMu.Lock()
+	defer b.topicsMu.Unlock()
+
+	for topicName, topicMeta := range b.ClusterMetadata.TopicsMetadata.Topics {
+		// Check if any partition is assigned to this broker
+		hasPartition := false
+		for _, brokerPort := range topicMeta.Partitions {
+			if brokerPort == b.port {
+				hasPartition = true
+				break
+			}
+		}
+
+		if hasPartition {
+			// Initialize topic if it doesn't exist locally
+			if b.Topics[topicName] == nil {
+				b.Topics[topicName] = &TopicData{
+					Name:          topicName,
+					NumPartitions: topicMeta.NumPartitions,
+					Partitions:    make(map[cluster.PartitionKey]*Partition),
+					topicMu:       sync.RWMutex{},
+				}
+				log.Printf("Initialized local topic %s for broker %d", topicName, b.port)
+			}
+		}
+	}
 }
 
 func (b *brokerServer) registerBrokerWatcher() {
@@ -187,7 +228,7 @@ func (b *brokerServer) registerBrokerWatcher() {
 }
 
 func (b *brokerServer) registerControllerWatcher() {
-	controllerWatchCh := b.etcdClient.Watch(b.ctx, "/controller", clientv3.WithPrefix())
+	controllerWatchCh := b.etcdClient.Watch(b.ctx, "controller")
 	go func() {
 		for watchResp := range controllerWatchCh {
 			for _, ev := range watchResp.Events {

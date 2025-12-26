@@ -206,9 +206,10 @@ func (p *Producer) populateMetadata(useBootstrapServer bool) error {
 		meta.BrokersMetadata.Brokers[cluster.Port(b.Port)] = &cluster.BrokerMetadata{Port: cluster.Port(b.Port)}
 	}
 	meta.BrokersMetadata.Controller = cluster.Port(res.ControllerPort)
+	log.Println("Got controller port:", meta.BrokersMetadata.Controller)
 
 	p.clusterMetadata = &meta
-	log.Printf("Got metadata from broker")
+	log.Printf("Got metadata from broker: %+v", meta)
 	return nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"strconv"
 	"sync"
@@ -58,7 +59,10 @@ type PartitionMetadata struct {
 	Partition  cluster.PartitionKey
 	Broker     cluster.Port
 	LastOffset int
+	Persisted  bool // Indicates if most recent offset has been persisted
 }
+
+var OffsetUpdateInterval = 4 * time.Second
 
 func NewConsumer(groupID string) *Consumer {
 	log.Println("Creating new Consumer...")
@@ -89,6 +93,9 @@ func NewConsumer(groupID string) *Consumer {
 	if err != nil {
 		log.Fatalf("Failed to join consumer group: %v", err)
 	}
+
+	go c.updateOffsetsTicker()
+
 	return c
 }
 
@@ -355,8 +362,7 @@ func (c *Consumer) rebalanceConsumer(event *clientv3.Event) {
 
 }
 
-func (c *Consumer) pullMessages(topicName string, maxMsgs int, maxBytes int) ([][]byte, error) {
-	var messages [][]byte
+func (c *Consumer) PullMessages(topicName string, maxMsgs int, maxBytes int) ([]*consumerpb.Message, error) {
 	if c.subscribedTopics[topicName] == nil {
 		log.Printf("Consumer %s is not subscribed to topic %s", c.ID, topicName)
 		return nil, errors.New("Not subscribed to topic")
@@ -366,10 +372,72 @@ func (c *Consumer) pullMessages(topicName string, maxMsgs int, maxBytes int) ([]
 		return nil, errors.New("No broker metadata")
 	}
 	c.mu.RLock()
-	_ = c.subscribedTopics[topicName] // TODO: Use this to pull messages from assigned partitions
+	consumerTopicMeta, ok := c.subscribedTopics[topicName] // TODO: Use this to pull messages from assigned partitions
 	c.mu.RUnlock()
+	if !ok {
+		log.Printf("Consumer %s is not subscribed to topic %s", c.ID, topicName)
+		return nil, errors.New("Not subscribed to topic")
+	}
+	partitionMetaMap := consumerTopicMeta.PartitionMetadataMap
+	if len(partitionMetaMap) == 0 {
+		log.Printf("Consumer %s has no assigned partitions for topic %s", c.ID, topicName)
+		return []*consumerpb.Message{}, nil
+	}
 
-	// TODO: Implement the logic to pull messages from the specified topic
+	var messages []*consumerpb.Message
+	var wg sync.WaitGroup
+	var msgMu sync.Mutex
+	for pk, partitionMeta := range partitionMetaMap {
+		wg.Add(1)
+		go func(partitionKey cluster.PartitionKey, pMeta *PartitionMetadata) {
+			defer wg.Done()
+			brokerPort := pMeta.Broker
+			clientConn, ok := c.clientConn[brokerPort]
+			if !ok {
+				log.Printf("Consumer %s has no client connection to broker %d for partition %d of topic %s",
+					c.ID, brokerPort, partitionKey, topicName)
+				return
+			}
+			req := &consumerpb.ConsumeRequest{
+				Topic:        topicName,
+				PartitionKey: int32(partitionKey),
+				Offset:       int64(pMeta.LastOffset + 1),
+				MaxMessages:  int32(maxMsgs),
+				MaxBytes:     int32(maxBytes),
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			resp, err := clientConn.client.ConsumeMessages(ctx, req)
+			if err != nil {
+				log.Printf("Consumer %s failed to pull messages from broker %d for partition %d of topic %s: %v",
+					c.ID, brokerPort, partitionKey, topicName, err)
+				return
+			}
+			if len(resp.Messages) == 0 {
+				log.Printf("Consumer %s received no messages from broker %d for partition %d of topic %s",
+					c.ID, brokerPort, partitionKey, topicName)
+				return
+			}
+			log.Printf("Consumer %s received %d messages from broker %d for partition %d of topic %s",
+				c.ID, len(resp.Messages), brokerPort, partitionKey, topicName)
+
+			// Update last offset
+			c.mu.Lock()
+			if pMeta.LastOffset < int(resp.LastOffset) {
+				pMeta.LastOffset = int(resp.LastOffset)
+				pMeta.Persisted = false
+			}
+			c.mu.Unlock()
+
+			// Append messages to the result slice
+			msgMu.Lock()
+			defer msgMu.Unlock()
+			for _, msg := range resp.Messages {
+				messages = append(messages, msg)
+			}
+		}(pk, partitionMeta)
+	}
+	wg.Wait()
 	return messages, nil
 }
 
@@ -541,4 +609,56 @@ func (c *Consumer) getPartitionOffset(topic string, partition cluster.PartitionK
 		return -1, err
 	}
 	return offset, nil
+}
+
+func (c *Consumer) updateOffsetsTicker() {
+	ticker := time.NewTicker(OffsetUpdateInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			log.Println("Flush ticker triggered - flushing all logs")
+			c.updateOffsets()
+		case <-c.ctx.Done():
+			log.Println("Flush ticker stopping due to consumer shutdown")
+			return
+		}
+	}
+}
+
+func (c *Consumer) updateOffsets() {
+	for topic, consumerTopicMeta := range c.subscribedTopics {
+		for partition, pMeta := range consumerTopicMeta.PartitionMetadataMap {
+			if pMeta.Persisted {
+				continue
+			}
+
+			// Update the offset in etcd
+			// First get current value
+			offsetKey := fmt.Sprintf("/consumer-group/%s/%s/%d/offset", c.ID, topic, partition)
+			currentOffset, err := c.getPartitionOffset(topic, partition)
+			if err != nil {
+				log.Printf("Failed to get current offset for partition %d of topic %s: %v", partition, topic, err)
+				continue
+			}
+			log.Printf("Current offset for partition %d of topic %s is %d", partition, topic, currentOffset)
+
+			if pMeta.LastOffset <= currentOffset {
+				log.Printf("No new offset to update for partition %d of topic %s (last offset: %d, current offset: %d)", partition, topic, pMeta.LastOffset, currentOffset)
+				c.mu.Lock()
+				pMeta.LastOffset = currentOffset
+				pMeta.Persisted = true
+				c.mu.Unlock()
+				continue
+			}
+
+			// Update offset
+			_, err = c.etcdClient.Put(context.Background(), offsetKey, fmt.Sprintf("%d", pMeta.LastOffset))
+			if err != nil {
+				log.Printf("Failed to update offset for partition %d of topic %s: %v", partition, topic, err)
+				continue
+			}
+			pMeta.Persisted = true
+		}
+	}
 }

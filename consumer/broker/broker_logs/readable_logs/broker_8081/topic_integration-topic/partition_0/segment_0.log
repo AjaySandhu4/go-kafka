@@ -1,0 +1,16 @@
+Offset 0: Message 2: File uploaded to server
+Offset 54: Message 5: User logout successful
+Offset 107: Message 6: New user registered
+Offset 157: Message 10: Server restarted
+Offset 205: Message 11: Cache cleared
+Offset 250: Message 13: Transaction completed
+Offset 303: Message 15: Backup restored
+Offset 350: Message 16: Health check OK
+Offset 397: Message 18: Demo complete!
+Offset 0: Message 1: User login successful
+Offset 52: Message 2: File uploaded to server
+Offset 106: Message 8: Session expired for user
+Offset 161: Message 10: Server restarted
+Offset 209: Message 11: Cache cleared
+Offset 254: Message 13: Transaction completed
+Offset 307: Message 14: Email sent
